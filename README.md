@@ -219,11 +219,59 @@ node .\server.mjs
 
 An occupied explicitly selected port causes startup to fail; choose another port or remove the override. The Windows launchers currently use the app's `data` folder for discovery and logs, so use the default data location with them. Use foreground mode when overriding WORKSPACE_DATA_DIR.
 
-## Moving to another PC and backups
+## Development and GitHub (main copy)
 
-### Transfer the app
+| Item | Value |
+| --- | --- |
+| **Canonical dev folder** | `C:\Projects\noa` |
+| **Public repository** | [github.com/Deepak-Das01/noa](https://github.com/Deepak-Das01/noa) |
+| **Default branch** | `main` |
 
-1. Copy **`TerminalWorkspace-0.2.1-Windows.zip`** to the other laptop (or rebuild it; see below).
+After changes on the dev PC, commit and push so other laptops stay in sync:
+
+```powershell
+cd C:\Projects\noa
+git add -A
+git status
+git commit -m "Your message"
+git push origin main
+```
+
+**Never push personal data:** `data\` (notes, settings, logs, runtime), `.env`, keys, or ZIPs. Only source code and docs belong in git. See `AGENTS.md`.
+
+## Using Noa on multiple laptops
+
+Noa is designed so **each laptop keeps its own data** while sharing the same app code from GitHub.
+
+| What travels via git | What stays on each PC only |
+| --- | --- |
+| Source code, README, launchers | `data\notes.md`, `data\settings.json` |
+| | `data\runtime.json`, logs |
+| | Browser themes, SSH saved passwords (local storage) |
+| | Workspace title (`{username}'s Workspace`) |
+| | VM/hypervisor inventory (detected at runtime) |
+
+### Set up on a new laptop
+
+```powershell
+git clone https://github.com/Deepak-Das01/noa.git C:\Projects\noa
+cd C:\Projects\noa
+npm install
+```
+
+Or pull updates on an existing clone:
+
+```powershell
+cd C:\Projects\noa
+git pull origin main
+npm install
+```
+
+Then run **`Start Workspace.cmd`**. Do **not** copy another PC’s `data\` folder unless you intentionally want to migrate notes.
+
+### Transfer without git (ZIP)
+
+1. Build or copy **`TerminalWorkspace-0.2.2-Windows.zip`** (or rebuild with `package-release.ps1`).
 2. On the destination: extract, install Node.js 22+, run **`Start Workspace.cmd`**.
 3. If native modules fail (unusual on matching Windows x64), run **`Setup Workspace.cmd`** on that PC only.
 
@@ -327,7 +375,7 @@ The current application baseline is **0.2.2**. `package.json` is the version sou
 
 ### Unreleased
 
-_No unreleased changes._
+- 2026-09-10: Established `C:\Projects\noa` as the canonical dev directory; documented GitHub workflow, multi-laptop rules, and stricter `.gitignore` so personal `data\` never enters the public repo (see AGENTS.md).
 
 ### 0.2.2 — 2026-09-10
 

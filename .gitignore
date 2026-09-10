@@ -1,9 +1,26 @@
+# Dependencies
 node_modules/
-data/runtime.json
-data/server.log
-data/server-error.log
-data/settings.json
-data/notes.md
+
+# Per-machine runtime data (never commit personal laptop data)
+data/*
+!data/.gitkeep
+
+# Build artifacts
 *.zip
+
+# Secrets and local env
+.env
+.env.*
+*.pem
+*.key
+id_rsa*
+credentials.json
+
+# OS / editor
 .DS_Store
 Thumbs.db
+.cursor/
+agent-transcripts/
+
+# Logs (anywhere)
+*.log
