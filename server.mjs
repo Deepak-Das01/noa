@@ -13,6 +13,7 @@ import { getInfrastructure } from './infrastructure.mjs';
 import { getSystemStats } from './system.mjs';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
+const DEFAULT_PORT = 8765;
 const require = createRequire(import.meta.url);
 const token = crypto.randomBytes(32).toString('hex');
 const MAX_SESSIONS = 5;
@@ -422,7 +423,7 @@ wss.on('connection', (ws, req) => {
   ws.on('error', () => {});
 });
 
-server.listen(Number(process.env.PORT || 0), '127.0.0.1', () => {
+server.listen(Number(process.env.PORT || DEFAULT_PORT), '127.0.0.1', () => {
   origin = `http://127.0.0.1:${server.address().port}`;
   createSession({ kind: 'local' });
   fs.writeFileSync(path.join(dataDir, 'runtime.json'), JSON.stringify({ url: origin, pid: process.pid }));

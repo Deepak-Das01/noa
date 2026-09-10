@@ -5,7 +5,7 @@
 **Product name: Noa** (Terminal Workspace)  
 **Status: Windows x64 portable release with bundled dependencies; validated on the development PC, not across all Windows devices.**
 
-Terminal Workspace is a local browser application combining interactive terminals, an autosaving notes editor, hypervisor/VM infrastructure view, and workspace settings. It runs on one localhost port. The header title is **never hardcoded to a person or PC** — on each machine it becomes `{Windows username}'s Workspace` (for example `Alex's Workspace` on another laptop). Detection uses the signed-in Windows account (`USERNAME`, `os.userInfo()`, or the user profile folder), then falls back to the computer name. Set `WORKSPACE_TITLE` only if you want a custom full title. The app does not require Codex, an account, or a hosted service. No host-specific paths are hardcoded; each PC is detected at runtime.
+Terminal Workspace is a local browser application combining interactive terminals, an autosaving notes editor, hypervisor/VM infrastructure view, and workspace settings. It runs on **`http://127.0.0.1:8765`** by default (override with `PORT`). The header title is **never hardcoded to a person or PC** — on each machine it becomes `{Windows username}'s Workspace` (for example `Alex's Workspace` on another laptop). Detection uses the signed-in Windows account (`USERNAME`, `os.userInfo()`, or the user profile folder), then falls back to the computer name. Set `WORKSPACE_TITLE` only if you want a custom full title. The app does not require Codex, an account, or a hosted service. No host-specific paths are hardcoded; each PC is detected at runtime.
 
 ## Features
 
@@ -38,7 +38,7 @@ Terminal Workspace is a local browser application combining interactive terminal
 - Save-folder field accepts an absolute folder path and creates the folder if needed and permitted.
 - Changing the save folder copies the current notes; the original remains in place.
 - An existing `notes.md` in the new folder is never overwritten: choose another folder.
-- Restart app saves pending notes, asks for confirmation, ends the terminal session, and reconnects on the same port. Running commands end during restart.
+- Restart app saves pending notes, shows a reload animation, ends extra terminals, and returns to a single default terminal on the same port. Running commands end during restart.
 
 ### Infrastructure
 
@@ -200,7 +200,7 @@ Saved remote SSH passwords are stored unencrypted in browser local storage on th
 
 | Variable or path | Behavior |
 | --- | --- |
-| `PORT` | Use a particular port; otherwise choose a free port |
+| `PORT` | Listen port (default **8765**). Set to `0` for a random free port |
 | `WORKSPACE_SHELL` | Full path to a supported Bash/sh or PowerShell executable |
 | `WORKSPACE_CWD` | Override the starting folder for local shells (default: your user home folder) |
 | `WORKSPACE_DATA_DIR` | Override the server's data directory |
@@ -375,6 +375,8 @@ The current application baseline is **0.2.2**. `package.json` is the version sou
 
 ### Unreleased
 
+- 2026-09-10: Restart app and Restart shell now show a full-screen reload animation until the workspace is ready. After restart or page load, only **one default terminal** is kept open and Terminal is the active view.
+- 2026-09-10: Default listen port is now **8765** (`http://127.0.0.1:8765`). Restart the app to apply; set `PORT` to override.
 - 2026-09-10: Established `C:\Projects\noa` as the canonical dev directory; documented GitHub workflow, multi-laptop rules, and stricter `.gitignore` so personal `data\` never enters the public repo (see AGENTS.md).
 
 ### 0.2.2 — 2026-09-10

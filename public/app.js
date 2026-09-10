@@ -316,9 +316,35 @@ async function api(url, options = {}) {
   return response.json();
 }
 
+function showReloadOverlay(message = 'Restarting Noa…', hint = 'This takes a few seconds') {
+  $('reload-overlay-text').textContent = message;
+  document.querySelector('.reload-overlay-hint').textContent = hint;
+  $('reload-overlay').hidden = false;
+  document.body.classList.add('is-reloading');
+}
+
+function hideReloadOverlay() {
+  $('reload-overlay').hidden = true;
+  document.body.classList.remove('is-reloading');
+}
+
+async function ensureSingleDefaultTerminal(existing) {
+  if (!existing.length) return [];
+  const keep = existing.find(session => session.kind === 'local') || existing[0];
+  for (const session of existing) {
+    if (session.id === keep.id) continue;
+    try { await api(`/api/sessions/${session.id}`, { method: 'DELETE' }); } catch { /* ignore */ }
+  }
+  return [keep];
+}
+
 async function initTabs() {
+  splitMode = false;
+  secondaryTabId = null;
+  focusedPane = 'primary';
+  $('split-view').setAttribute('aria-pressed', 'false');
   const data = await api('/api/sessions');
-  const existing = data.sessions || [];
+  let existing = await ensureSingleDefaultTerminal(data.sessions || []);
   if (!existing.length) {
     await addTab({ kind: 'local' });
     return;
@@ -503,13 +529,16 @@ $('clear').onclick = () => { focusedTab()?.terminal.clear(); focusedTab()?.termi
 $('restart').onclick = async () => {
   const tab = focusedTab();
   if (!tab) return;
+  showReloadOverlay('Restarting shell…', 'Reconnecting your terminal');
   try {
     await api(`/api/sessions/${tab.id}/restart`, { method: 'POST' });
     tab.exited = false;
     tab.terminal.reset();
     updateTabControls();
     tab.terminal.focus();
+    setTimeout(hideReloadOverlay, 600);
   } catch {
+    hideReloadOverlay();
     $('connection').textContent = 'Restart failed';
   }
 };
@@ -1116,6 +1145,10 @@ $('restart-app').onclick = async () => {
     await save();
     if (dirty) throw new Error('Notes could not be saved. Restart cancelled.');
     $('restart-status').textContent = 'Restarting…';
+    showReloadOverlay('Restarting Noa…', 'Saving notes and reloading workspace');
+    showView('terminal');
+    sessionStorage.setItem('noaFreshStart', '1');
+    localStorage.setItem('workspaceView', 'terminal');
     await api('/api/restart-app', { method: 'POST' });
     for (const tab of tabs) { clearTimeout(tab.reconnect); tab.ws && (tab.ws.onclose = () => {}); tab.ws?.close(); }
     const deadline = Date.now() + 20000;
@@ -1123,24 +1156,37 @@ $('restart-app').onclick = async () => {
       try {
         const response = await fetch('/', { cache: 'no-store' });
         const html = await response.text();
-        if (response.ok && !html.includes(`content="${token}"`)) { location.reload(); return; }
+        if (response.ok && !html.includes(`content="${token}"`)) {
+          $('reload-overlay-text').textContent = 'Almost ready…';
+          document.querySelector('.reload-overlay-hint').textContent = 'Opening terminal';
+          setTimeout(() => location.reload(), 400);
+          return;
+        }
       } catch {}
       if (Date.now() < deadline) setTimeout(check, 750);
       else {
+        hideReloadOverlay();
         $('restart-status').textContent = 'The app has not reconnected. Run Start Workspace.cmd, then refresh this page.';
         button.disabled = false;
       }
     };
     setTimeout(check, 1000);
   } catch (error) {
+    hideReloadOverlay();
     $('restart-status').textContent = error.message === 'Not found' ? 'Run Restart Workspace.cmd once to activate the new restart button.' : error.message;
     button.disabled = false;
   }
 };
 
 loadNotes();
-const savedView = localStorage.getItem('workspaceView');
-if (savedView && WORKSPACE_VIEWS.includes(savedView)) showView(savedView);
-else showView(localStorage.getItem('notesOpen') === 'true' ? 'notes' : 'terminal');
+if (sessionStorage.getItem('noaFreshStart')) {
+  sessionStorage.removeItem('noaFreshStart');
+  localStorage.setItem('workspaceView', 'terminal');
+  showView('terminal');
+} else {
+  const savedView = localStorage.getItem('workspaceView');
+  if (savedView && WORKSPACE_VIEWS.includes(savedView)) showView(savedView);
+  else showView(localStorage.getItem('notesOpen') === 'true' ? 'notes' : 'terminal');
+}
 loadSettings();
 initTabs().catch(error => { $('connection').textContent = error.message || 'Could not start terminals'; });

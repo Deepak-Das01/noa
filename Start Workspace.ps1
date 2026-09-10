@@ -10,6 +10,7 @@ New-Item -ItemType Directory -Force -Path (Join-Path $appRoot 'data') | Out-Null
 if (-not (Test-Path -LiteralPath (Join-Path $appRoot 'node_modules\node-pty'))) {
   throw 'Dependencies are missing. Run Setup Workspace.cmd once, then start the app.'
 }
+if (-not $env:PORT) { $env:PORT = '8765' }
 $runtimePath = Join-Path $appRoot 'data\runtime.json'
 function Test-WorkspaceUrl($url) {
   try { $response = Invoke-WebRequest -Uri $url -TimeoutSec 2 -UseBasicParsing; return ($response.StatusCode -eq 200 -and ($response.Content.Contains('content="Terminal Workspace"') -or $response.Content.Contains('<title>Terminal Workspace</title>'))) } catch { return $false }
