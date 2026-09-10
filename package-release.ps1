@@ -16,7 +16,8 @@ New-Item -ItemType Directory -Path $stagingDir -Force | Out-Null
 
 $excludeDirs = @('.git', '.cursor', 'agent-transcripts')
 $excludeFiles = @('*.zip', 'package-release.ps1')
-$hostDataFiles = @('runtime.json', 'server-error.log', 'server.log', 'settings.json', 'notes.md')
+$hostDataFiles = @('runtime.json', 'server-error.log', 'server.log', 'settings.json', 'scripts.json', 'notes.md')
+$hostDataPatterns = @('*.txt', '*.md')
 
 Get-ChildItem -LiteralPath $appRoot -Force | ForEach-Object {
   if ($excludeDirs -contains $_.Name) { return }
@@ -28,8 +29,13 @@ Get-ChildItem -LiteralPath $appRoot -Force | ForEach-Object {
 $dataDir = Join-Path $stagingDir 'data'
 if (Test-Path -LiteralPath $dataDir) {
   Get-ChildItem -LiteralPath $dataDir -File -Force | ForEach-Object {
-    if ($hostDataFiles -contains $_.Name) { Remove-Item -LiteralPath $_.FullName -Force }
+    if ($hostDataFiles -contains $_.Name) { Remove-Item -LiteralPath $_.FullName -Force; return }
+    foreach ($pattern in $hostDataPatterns) {
+      if ($_.Name -like $pattern) { Remove-Item -LiteralPath $_.FullName -Force; break }
+    }
   }
+  $scriptsDir = Join-Path $dataDir 'scripts'
+  if (Test-Path -LiteralPath $scriptsDir) { Remove-Item -LiteralPath $scriptsDir -Recurse -Force }
 } else {
   New-Item -ItemType Directory -Path $dataDir -Force | Out-Null
 }

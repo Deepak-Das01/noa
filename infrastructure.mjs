@@ -199,7 +199,7 @@ function optionalScanRoots() {
   return raw.split(path.delimiter).map(item => item.trim()).filter(Boolean);
 }
 
-async function getVmwareUptimesFromLocks(runningVmxPaths) {
+async function getVmwareUptimes(runningVmxPaths) {
   if (!runningVmxPaths.length) return new Map();
   const pathsLiteral = runningVmxPaths
     .map(vmxPath => `'${String(vmxPath).replace(/'/g, "''")}'`)
@@ -207,20 +207,38 @@ async function getVmwareUptimesFromLocks(runningVmxPaths) {
   const script = `
 $vmxPaths = @(${pathsLiteral})
 $procs = @(Get-Process -Name vmware-vmx -ErrorAction SilentlyContinue)
+$usedProcIds = @{}
 $result = @()
 foreach ($vmx in $vmxPaths) {
-  $procId = $null
-  $lockDir = "$vmx.lck"
-  if (Test-Path -LiteralPath $lockDir) {
-    foreach ($lockFile in Get-ChildItem -LiteralPath $lockDir -Filter '*.lck' -ErrorAction SilentlyContinue) {
-      if ($lockFile.Name -match 'M(\\d+)\\.lck$') { $procId = [int]$Matches[1]; break }
-      if (-not $procId -and $lockFile.Name -match '(\\d+)\\.lck$') { $procId = [int]$Matches[1] }
-    }
-  }
   $uptimeSeconds = $null
-  if ($procId) {
-    $proc = $procs | Where-Object { $_.Id -eq $procId } | Select-Object -First 1
-    if ($proc) { $uptimeSeconds = [int][math]::Floor(((Get-Date) - $proc.StartTime).TotalSeconds) }
+  $lockDir = "$vmx.lck"
+  $lock = $null
+  if (Test-Path -LiteralPath $lockDir) {
+    $lock = Get-ChildItem -LiteralPath $lockDir -Filter 'M*.lck' -ErrorAction SilentlyContinue |
+      Sort-Object LastWriteTime -Descending |
+      Select-Object -First 1
+  }
+  if ($lock) {
+    $matched = $null
+    if ($lock.Name -match 'M(\\d+)\\.lck$') {
+      $procId = [int]$Matches[1]
+      $matched = $procs | Where-Object { $_.Id -eq $procId } | Select-Object -First 1
+    }
+    if (-not $matched) {
+      $target = $lock.LastWriteTime
+      $candidates = $procs | Where-Object { -not $usedProcIds.ContainsKey($_.Id) } |
+        Sort-Object { [math]::Abs(($_.StartTime - $target).TotalSeconds) }
+      $candidate = $candidates | Select-Object -First 1
+      if ($candidate -and [math]::Abs(($candidate.StartTime - $target).TotalSeconds) -le 300) {
+        $matched = $candidate
+      }
+    }
+    if ($matched) {
+      $uptimeSeconds = [int][math]::Floor(((Get-Date) - $matched.StartTime).TotalSeconds)
+      $usedProcIds[$matched.Id] = $true
+    } elseif ($lock.LastWriteTime) {
+      $uptimeSeconds = [int][math]::Floor(((Get-Date) - $lock.LastWriteTime).TotalSeconds)
+    }
   }
   if ($null -eq $uptimeSeconds -and $vmxPaths.Count -eq 1 -and $procs.Count -eq 1) {
     $uptimeSeconds = [int][math]::Floor(((Get-Date) - $procs[0].StartTime).TotalSeconds)
@@ -237,17 +255,150 @@ $result | ConvertTo-Json -Compress -Depth 4
   const map = new Map();
   for (const row of rows) {
     const vmxPath = path.resolve(String(row.vmxPath || '')).toLowerCase();
-    const uptime = row.uptimeSeconds;
-    if (vmxPath && uptime != null && uptime >= 0) map.set(vmxPath, uptime);
+    const uptime = Number(row.uptimeSeconds);
+    if (vmxPath && Number.isFinite(uptime) && uptime >= 0) map.set(vmxPath, uptime);
   }
   return map;
 }
 
-async function getVmwareGuestIp(vmrun, vmxPath) {
+function normalizeMac(mac) {
+  return String(mac || '').toLowerCase().replace(/-/g, ':');
+}
+
+function isUsableIPv4(ip) {
+  if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(ip)) return false;
+  const [a, b] = ip.split('.').map(Number);
+  if (a === 0 || a === 127 || a >= 224) return false;
+  if (a === 169 && b === 254) return false;
+  return ip !== '0.0.0.0';
+}
+
+function uniqueIPv4(ips) {
+  return [...new Set(ips.filter(isUsableIPv4))];
+}
+
+function parseDhcpLeaseFile(content) {
+  const latestByMac = new Map();
+  for (const block of content.split(/\n(?=lease\s+\d)/)) {
+    const ipMatch = block.match(/^lease\s+(\d{1,3}(?:\.\d{1,3}){3})\s*\{/);
+    const macMatch = block.match(/hardware\s+ethernet\s+([0-9a-f:-]+)/i);
+    const startsMatch = block.match(/starts\s+\d+\s+(\d{4})\/(\d{2})\/(\d{2})\s+(\d{2}):(\d{2}):(\d{2})/);
+    if (!ipMatch || !macMatch) continue;
+    const ip = ipMatch[1];
+    const mac = normalizeMac(macMatch[1]);
+    if (!isUsableIPv4(ip) || !mac) continue;
+    const starts = startsMatch
+      ? Date.UTC(+startsMatch[1], +startsMatch[2] - 1, +startsMatch[3], +startsMatch[4], +startsMatch[5], +startsMatch[6])
+      : 0;
+    const existing = latestByMac.get(mac);
+    if (!existing || starts >= existing.starts) latestByMac.set(mac, { ip, starts });
+  }
+  return latestByMac;
+}
+
+function parseVmwareMacAddresses(vmxPath) {
+  const text = fs.readFileSync(vmxPath, 'utf8');
+  const macs = new Set();
+  for (const line of text.split(/\r?\n/)) {
+    for (const pattern of [
+      /^ethernet\d+\.generatedAddress\s*=\s*"?([0-9a-f:-]+)"?/i,
+      /^ethernet\d+\.address\s*=\s*"?([0-9a-f:-]+)"?/i,
+    ]) {
+      const match = line.match(pattern);
+      if (!match) continue;
+      const mac = normalizeMac(match[1]);
+      if (mac && mac !== '00:00:00:00:00:00') macs.add(mac);
+    }
+  }
+  return [...macs];
+}
+
+function parseVmwareGuestinfoIps(vmxPath) {
+  const text = fs.readFileSync(vmxPath, 'utf8');
+  const ips = [];
+  for (const line of text.split(/\r?\n/)) {
+    const match = line.match(/^guestinfo\.[^\s=]*ip[^\s=]*\s*=\s*"?([0-9.]+)"?/i);
+    if (match && isUsableIPv4(match[1])) ips.push(match[1]);
+  }
+  return ips;
+}
+
+function readVmwareDhcpLeases() {
+  const latestByMac = new Map();
+  const vmwareData = path.join(process.env.ProgramData || 'C:\\ProgramData', 'VMware');
+  const leaseFiles = [];
+  const direct = path.join(vmwareData, 'vmnetdhcp.leases');
+  if (fs.existsSync(direct)) leaseFiles.push(direct);
+  const dhcpdRoot = path.join(vmwareData, 'vmnetdhcpd');
+  if (fs.existsSync(dhcpdRoot)) {
+    try {
+      for (const entry of fs.readdirSync(dhcpdRoot, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        const lease = path.join(dhcpdRoot, entry.name, 'leases');
+        if (fs.existsSync(lease)) leaseFiles.push(lease);
+      }
+    } catch { /* ignore */ }
+  }
+  for (const leasesPath of leaseFiles) {
+    try {
+      const parsed = parseDhcpLeaseFile(fs.readFileSync(leasesPath, 'utf8'));
+      for (const [mac, entry] of parsed) {
+        const existing = latestByMac.get(mac);
+        if (!existing || entry.starts >= existing.starts) latestByMac.set(mac, entry);
+      }
+    } catch { /* ignore */ }
+  }
+  return new Map([...latestByMac.entries()].map(([mac, entry]) => [mac, entry.ip]));
+}
+
+async function getHostNeighborIpsByMac(macs) {
+  const uniqueMacs = [...new Set(macs.map(normalizeMac).filter(Boolean))];
+  if (!uniqueMacs.length) return new Map();
+  const macList = uniqueMacs.map(mac => `'${mac.replace(/'/g, "''")}'`).join(', ');
+  const script = `
+$macs = @(${macList})
+$result = [ordered]@{}
+foreach ($mac in $macs) {
+  $target = $mac.ToLower()
+  $neighbor = Get-NetNeighbor -ErrorAction SilentlyContinue |
+    Where-Object {
+      $_.LinkLayerAddress -and $_.LinkLayerAddress.ToLower().Replace('-', ':') -eq $target -and $_.IPAddress -match '^\\d{1,3}(\\.\\d{1,3}){3}$'
+    } |
+    Sort-Object { if ($_.State -eq 'Reachable') { 0 } elseif ($_.State -eq 'Stale') { 1 } else { 2 } } |
+    Select-Object -First 1
+  if ($neighbor) { $result[$target] = [string]$neighbor.IPAddress }
+}
+$result | ConvertTo-Json -Compress
+`;
+  const data = await runPowerShell(script);
+  if (!data || typeof data !== 'object') return new Map();
+  return new Map(Object.entries(data).map(([mac, ip]) => [normalizeMac(mac), ip]));
+}
+
+async function getVmwareGuestIpFromVmrun(vmrun, vmxPath) {
   const output = await run(vmrun, ['-T', 'ws', 'getGuestIPAddress', vmxPath], 8000);
   const ip = String(output || '').trim();
-  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(ip) && ip !== '0.0.0.0') return [ip];
+  return isUsableIPv4(ip) ? [ip] : [];
+}
+
+function resolveVmwareGuestIps(vmxPath, { dhcpLeases, neighborByMac }) {
+  const macs = parseVmwareMacAddresses(vmxPath);
+  const dhcpIps = macs.map(mac => dhcpLeases.get(mac)).filter(Boolean);
+  if (dhcpIps.length) return uniqueIPv4(dhcpIps);
+  const neighborIps = macs.map(mac => neighborByMac.get(mac)).filter(Boolean);
+  return uniqueIPv4([...parseVmwareGuestinfoIps(vmxPath), ...neighborIps]);
+}
+
+async function enrichVmwareGuestIps(vmrun, vmxPath, context) {
+  const resolved = resolveVmwareGuestIps(vmxPath, context);
+  if (resolved.length) return resolved;
+  if (vmrun) return await getVmwareGuestIpFromVmrun(vmrun, vmxPath);
   return [];
+}
+
+function normalizeVmIpAddresses(vm) {
+  vm.ipAddresses = uniqueIPv4(vm.ipAddresses || []);
+  return vm;
 }
 
 async function getVmwareRunningPaths() {
@@ -336,11 +487,23 @@ foreach ($vm in Get-VM) {
   $ips = @()
   foreach ($adapter in Get-VMNetworkAdapter -VM $vm -ErrorAction SilentlyContinue) {
     foreach ($ip in $adapter.IPAddresses) {
-      if ($ip -match '^\\d{1,3}(\\.\\d{1,3}){3}$') { $ips += [string]$ip }
+      if ($ip -match '^\\d{1,3}(\\.\\d{1,3}){3}$' -and $ip -notmatch '^169\\.254\\.' -and $ip -ne '0.0.0.0') { $ips += [string]$ip }
     }
   }
+  $ips = @($ips | Select-Object -Unique)
   $uptimeSeconds = $null
-  if ($vm.State -eq 'Running') { $uptimeSeconds = [int][math]::Floor($vm.Uptime.TotalSeconds) }
+  if ($vm.State -eq 'Running') {
+    $uptimeSeconds = [int][math]::Floor($vm.Uptime.TotalSeconds)
+    if ($null -eq $uptimeSeconds -or $uptimeSeconds -lt 0) {
+      try {
+        $cim = Get-CimInstance -Namespace root\\virtualization\\v2 -ClassName Msvm_ComputerSystem -Filter ("ElementName='{0}'" -f $vm.Name.Replace("'", "''")) -ErrorAction Stop
+        if ($cim.OnTimeInMilliseconds -gt 0) {
+          $start = [datetime]::SpecifyKind([datetime]::new(1970, 1, 1, 0, 0, 0).AddMilliseconds([double]$cim.OnTimeInMilliseconds), 'Utc')
+          $uptimeSeconds = [int][math]::Floor(((Get-Date).ToUniversalTime() - $start).TotalSeconds)
+        }
+      } catch {}
+    }
+  }
   $vms += [ordered]@{
     id = $vm.Id.Guid
     name = $vm.Name
@@ -356,7 +519,9 @@ foreach ($vm in Get-VM) {
 `;
   const data = await runPowerShell(script);
   if (!data || typeof data !== 'object') return { id: 'hyper-v', name: 'Hyper-V', installed: false, version: '', vms: [] };
-  return { id: 'hyper-v', ...data };
+  const hypervisor = { id: 'hyper-v', ...data };
+  hypervisor.vms = (hypervisor.vms || []).map(normalizeVmIpAddresses);
+  return hypervisor;
 }
 
 async function getVBoxDiskCapacityBytes(vbox, diskPath) {
@@ -421,9 +586,15 @@ async function detectVirtualBox(registryPaths) {
       if (diskMatch) storageBytes += await getVBoxDiskCapacityBytes(vbox, diskMatch[1]);
     }
     let uptimeSeconds = null;
-    const stateChangeTime = Number(read('VMStateChangeTime'));
-    if (rawState === 'running' && stateChangeTime > 0) {
-      uptimeSeconds = Math.max(0, Math.floor(Date.now() / 1000 - stateChangeTime));
+    const stateChangeRaw = read('VMStateChangeTime');
+    if (rawState === 'running' && stateChangeRaw) {
+      if (/^\d+$/.test(stateChangeRaw)) {
+        const stateChangeTime = Number(stateChangeRaw);
+        if (stateChangeTime > 0) uptimeSeconds = Math.max(0, Math.floor(Date.now() / 1000 - stateChangeTime));
+      } else {
+        const parsed = Date.parse(stateChangeRaw);
+        if (!Number.isNaN(parsed)) uptimeSeconds = Math.max(0, Math.floor((Date.now() - parsed) / 1000));
+      }
     }
     const ipAddresses = rawState === 'running' ? await getVBoxGuestIps(vbox, name) : [];
     vms.push({
@@ -437,7 +608,7 @@ async function detectVirtualBox(registryPaths) {
       uptimeSeconds,
     });
   }
-  return { id: 'virtualbox', name: 'VirtualBox', installed: true, version, vms };
+  return { id: 'virtualbox', name: 'VirtualBox', installed: true, version, vms: vms.map(normalizeVmIpAddresses) };
 }
 
 async function detectVMware(registryPaths) {
@@ -462,7 +633,12 @@ async function detectVMware(registryPaths) {
   const runningVmxPaths = vmEntries
     .map(entry => entry.path)
     .filter(vmxPath => running.has(path.resolve(vmxPath).toLowerCase()));
-  const uptimeByVmx = await getVmwareUptimesFromLocks(runningVmxPaths);
+  const uptimeByVmx = await getVmwareUptimes(runningVmxPaths);
+  const dhcpLeases = readVmwareDhcpLeases();
+  const neighborByMac = await getHostNeighborIpsByMac(
+    runningVmxPaths.flatMap(vmxPath => parseVmwareMacAddresses(vmxPath)),
+  );
+  const ipContext = { vmrun, dhcpLeases, neighborByMac };
   const vms = [];
   for (const entry of vmEntries) {
     const vm = parseVmwareVmx(entry.path, entry.displayName);
@@ -470,8 +646,9 @@ async function detectVMware(registryPaths) {
     if (running.has(vmxKey)) {
       vm.status = 'Running';
       vm.uptimeSeconds = uptimeByVmx.get(vmxKey) ?? null;
-      if (vmrun) vm.ipAddresses = await getVmwareGuestIp(vmrun, entry.path);
+      vm.ipAddresses = await enrichVmwareGuestIps(vmrun, entry.path, ipContext);
     }
+    normalizeVmIpAddresses(vm);
     delete vm.vmxPath;
     vms.push(vm);
   }

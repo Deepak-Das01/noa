@@ -39,7 +39,7 @@ let secondaryTabId = null;
 let splitMode = false;
 let focusedPane = 'primary';
 let fitFrame = 0;
-let saveTimer, dirty = false, saving = false, loaded = false;
+let saveTimer, dirty = false, saving = false, loaded = false, currentNotesFile = 'notes.md', notesDirectory = '';
 
 function mountTabContainer(tab, host) {
   host.append(tab.container);
@@ -574,6 +574,7 @@ const WORKSPACE_VIEWS = ['terminal', 'notes', 'infrastructure', 'settings'];
 
 function showView(view) {
   const active = WORKSPACE_VIEWS.includes(view) ? view : 'terminal';
+  const wasOnNotes = !$('notes').hidden;
   $('terminal-panel').hidden = active !== 'terminal';
   $('notes').hidden = active !== 'notes';
   $('infrastructure').hidden = active !== 'infrastructure';
@@ -589,12 +590,17 @@ function showView(view) {
   $('settings-tab').setAttribute('aria-pressed', String(active === 'settings'));
   localStorage.setItem('workspaceView', active);
   if (active === 'terminal') requestAnimationFrame(resizeActiveTab);
-  if (active === 'notes') { save(); $('editor').focus(); }
+  if (wasOnNotes && active !== 'notes') save({ force: true });
+  if (active === 'notes') $('editor').focus();
   else if (active === 'terminal') activeTab()?.terminal.focus();
-  if (active === 'infrastructure') loadInfrastructure();
+  if (active === 'infrastructure') {
+    loadInfrastructure();
+    loadInfraScripts();
+  }
   if (active === 'settings') {
     loadReadme();
     startSystemMonitor();
+    loadScriptEditor();
   } else {
     stopSystemMonitor();
   }
@@ -769,7 +775,7 @@ document.addEventListener('keydown', event => {
     event.preventDefault();
     showView($('notes').hidden ? 'notes' : 'terminal');
   }
-  if (event.ctrlKey && event.code === 'KeyS' && !$('notes').hidden) { event.preventDefault(); save(); }
+  if (event.ctrlKey && event.code === 'KeyS' && !$('notes').hidden) { event.preventDefault(); save({ force: true }); }
 });
 
 function count() {
@@ -777,22 +783,205 @@ function count() {
   $('count').textContent = `${n} ${n === 1 ? 'word' : 'words'}`;
 }
 
-async function save() {
-  clearTimeout(saveTimer);
-  if (!loaded || !dirty || saving) return;
-  saving = true;
+let notesFileMenuOpen = false;
+
+function updateNotesFilenameLabel() {
+  $('notes-filename').textContent = currentNotesFile;
+  $('notes-file-current').textContent = currentNotesFile;
+}
+
+function closeNotesFileMenu() {
+  $('notes-file-menu').hidden = true;
+  $('notes-file-trigger').setAttribute('aria-expanded', 'false');
+  notesFileMenuOpen = false;
+}
+
+function openNotesFileMenu() {
+  $('notes-file-menu').hidden = false;
+  $('notes-file-trigger').setAttribute('aria-expanded', 'true');
+  notesFileMenuOpen = true;
+}
+
+function toggleNotesFileMenu() {
+  if (notesFileMenuOpen) closeNotesFileMenu();
+  else openNotesFileMenu();
+}
+
+function updateNotesPathLabel() {
+  const fullPath = notesDirectory ? `${notesDirectory}\\${currentNotesFile}` : currentNotesFile;
+  $('notes-path').textContent = fullPath;
+  $('notes-path').title = fullPath;
+}
+
+function normalizeNotesFilename(name) {
+  const trimmed = String(name || '').trim();
+  if (!trimmed) return '';
+  return /\.(txt|md)$/i.test(trimmed) ? trimmed : `${trimmed}.txt`;
+}
+
+function renderNotesFileMenu(files, active) {
+  $('notes-file-current').textContent = active;
+  $('notes-file-menu').replaceChildren(...files.map(name => {
+    const option = document.createElement('button');
+    option.type = 'button';
+    option.className = `notes-file-option${name === active ? ' active' : ''}`;
+    option.role = 'option';
+    option.setAttribute('aria-selected', String(name === active));
+    option.textContent = name;
+    option.title = name;
+    option.onclick = () => {
+      closeNotesFileMenu();
+      openNotesFile(name).catch(error => { $('saved').textContent = error.message || 'Could not open file'; });
+    };
+    option.addEventListener('dblclick', event => {
+      event.stopPropagation();
+      closeNotesFileMenu();
+      if (name !== currentNotesFile) {
+        openNotesFile(name).then(() => startNotesRename()).catch(error => { $('saved').textContent = error.message || 'Could not open file'; });
+      } else {
+        startNotesRename();
+      }
+    });
+    return option;
+  }));
+}
+
+async function refreshNotesFiles(active = currentNotesFile) {
+  const data = await api('/api/notes/files');
+  const files = data.files?.length ? data.files : ['notes.md'];
+  notesDirectory = data.directory || notesDirectory;
+  currentNotesFile = files.includes(active) ? active : (data.active || files[0]);
+  renderNotesFileMenu(files, currentNotesFile);
+  updateNotesFilenameLabel();
+  updateNotesPathLabel();
+  localStorage.setItem('notesActiveFile', currentNotesFile);
+  return files;
+}
+
+async function openNotesFile(name) {
+  if (name === currentNotesFile) return;
+  await save({ force: true });
+  const data = await api(`/api/notes?file=${encodeURIComponent(name)}`);
+  currentNotesFile = data.file || name;
+  $('editor').value = data.text || '';
   dirty = false;
-  $('saved').textContent = 'Saving…';
+  loaded = true;
+  $('saved').textContent = 'Saved';
+  updateNotesFilenameLabel();
+  updateNotesPathLabel();
+  localStorage.setItem('notesActiveFile', currentNotesFile);
+  count();
+  updateEditor();
+}
+
+async function createNotesFile() {
+  await save({ force: true });
+  const data = await api('/api/notes/files', { method: 'POST', body: '{}' });
+  renderNotesFileMenu(data.files || [data.file], data.file);
+  currentNotesFile = data.file;
+  $('editor').value = '';
+  dirty = false;
+  loaded = true;
+  $('saved').textContent = 'Saved';
+  updateNotesFilenameLabel();
+  updateNotesPathLabel();
+  localStorage.setItem('notesActiveFile', currentNotesFile);
+  count();
+  updateEditor();
+  $('editor').focus();
+}
+
+async function deleteNotesFile() {
+  const name = currentNotesFile;
+  if (!confirm(`Delete "${name}"?\n\nThis file will be permanently removed.`)) return;
+  await save({ force: true });
+  const data = await api('/api/notes/files', { method: 'DELETE', body: JSON.stringify({ file: name }) });
+  notesDirectory = data.directory || notesDirectory;
+  currentNotesFile = data.active || data.files[0];
+  renderNotesFileMenu(data.files, currentNotesFile);
+  const noteData = await api(`/api/notes?file=${encodeURIComponent(currentNotesFile)}`);
+  $('editor').value = noteData.text || '';
+  dirty = false;
+  loaded = true;
+  $('saved').textContent = 'Saved';
+  updateNotesFilenameLabel();
+  updateNotesPathLabel();
+  localStorage.setItem('notesActiveFile', currentNotesFile);
+  count();
+  updateEditor();
+}
+
+async function renameNotesFile(newName) {
+  const target = normalizeNotesFilename(newName);
+  if (!target || target === currentNotesFile) return;
+  await save({ force: true });
+  const data = await api('/api/notes/files', { method: 'PATCH', body: JSON.stringify({ file: currentNotesFile, newName: target }) });
+  notesDirectory = data.directory || notesDirectory;
+  currentNotesFile = data.file || target;
+  renderNotesFileMenu(data.files, currentNotesFile);
+  updateNotesFilenameLabel();
+  updateNotesPathLabel();
+  localStorage.setItem('notesActiveFile', currentNotesFile);
+  $('saved').textContent = 'Renamed';
+}
+
+function startNotesRename() {
+  const label = $('notes-filename');
+  if (label.dataset.renaming === 'true') return;
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'notes-filename-input';
+  input.value = currentNotesFile;
+  input.setAttribute('aria-label', 'Rename note file');
+  input.spellcheck = false;
+  label.dataset.renaming = 'true';
+  label.replaceWith(input);
+  input.focus();
+  input.select();
+  let finished = false;
+  const finish = async (commit) => {
+    if (finished) return;
+    finished = true;
+    const next = document.createElement('span');
+    next.id = 'notes-filename';
+    next.className = 'notes-filename';
+    next.title = 'Double-click to rename';
+    if (commit) {
+      try {
+        await renameNotesFile(input.value);
+      } catch (error) {
+        $('saved').textContent = error.message || 'Could not rename file';
+      }
+    }
+    next.textContent = currentNotesFile;
+    input.replaceWith(next);
+    delete next.dataset.renaming;
+    next.addEventListener('dblclick', startNotesRename);
+  };
+  input.addEventListener('keydown', event => {
+    if (event.key === 'Enter') { event.preventDefault(); finish(true); }
+    if (event.key === 'Escape') { event.preventDefault(); finish(false); }
+  });
+  input.addEventListener('blur', () => { finish(true); });
+}
+
+async function save({ force = false } = {}) {
+  clearTimeout(saveTimer);
+  if (!loaded || saving) return;
+  if (!force && !dirty) return;
+  saving = true;
   const text = $('editor').value;
+  $('saved').textContent = 'Saving…';
   try {
-    await api('/api/notes', { method: 'PUT', body: JSON.stringify({ text }), keepalive: true });
-    $('saved').textContent = dirty ? 'Unsaved' : 'Saved';
+    await api('/api/notes', { method: 'PUT', body: JSON.stringify({ text, file: currentNotesFile }), keepalive: true });
+    dirty = false;
+    $('saved').textContent = 'Saved';
   } catch {
     dirty = true;
     $('saved').textContent = 'Save failed · retrying';
   } finally {
     saving = false;
-    if (dirty) saveTimer = setTimeout(save, 1500);
+    if (dirty) saveTimer = setTimeout(() => save(), 1500);
   }
 }
 
@@ -803,18 +992,24 @@ $('editor').addEventListener('input', () => {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(save, 400);
 });
-document.addEventListener('visibilitychange', () => { if (document.hidden) save(); });
-window.addEventListener('beforeunload', event => {
-  if (dirty || saving) { save(); event.preventDefault(); event.returnValue = ''; }
-});
+document.addEventListener('visibilitychange', () => { if (document.hidden) save({ force: true }); });
+window.addEventListener('pagehide', () => { save({ force: true }); });
+window.addEventListener('beforeunload', () => { save({ force: true }); });
 
 async function loadNotes() {
   try {
-    const data = await api('/api/notes');
-    $('editor').value = data.text;
+    const preferred = localStorage.getItem('notesActiveFile') || 'notes.md';
+    await refreshNotesFiles(preferred);
+    const data = await api(`/api/notes?file=${encodeURIComponent(currentNotesFile)}`);
+    currentNotesFile = data.file || currentNotesFile;
+    if (data.directory) notesDirectory = data.directory;
+    $('editor').value = data.text || '';
     loaded = true;
+    dirty = false;
     $('editor').disabled = false;
     $('saved').textContent = 'Saved';
+    updateNotesFilenameLabel();
+    updateNotesPathLabel();
     count();
     updateEditor();
   } catch {
@@ -823,7 +1018,17 @@ async function loadNotes() {
   }
 }
 
-$('save').onclick = () => save();
+$('new-note-file').onclick = () => { createNotesFile().catch(error => { $('saved').textContent = error.message || 'Could not create file'; }); };
+$('delete-note-file').onclick = () => { deleteNotesFile().catch(error => { $('saved').textContent = error.message || 'Could not delete file'; }); };
+$('notes-file-trigger').onclick = event => { event.stopPropagation(); toggleNotesFileMenu(); };
+$('notes-file-trigger').addEventListener('dblclick', event => { event.stopPropagation(); startNotesRename(); });
+$('notes-filename').addEventListener('dblclick', startNotesRename);
+document.addEventListener('click', event => {
+  if (notesFileMenuOpen && !$('notes-file-picker').contains(event.target)) closeNotesFileMenu();
+});
+document.addEventListener('keydown', event => {
+  if (event.key === 'Escape' && notesFileMenuOpen) closeNotesFileMenu();
+});
 let noteSize = 15;
 function notesSize(delta) {
   noteSize = Math.max(12, Math.min(30, noteSize + delta));
@@ -882,14 +1087,6 @@ function findNext() {
 }
 $('find').onclick = findNext;
 $('find-text').addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); findNext(); } });
-$('download').onclick = () => {
-  const url = URL.createObjectURL(new Blob([$('editor').value], { type: 'text/plain;charset=utf-8' }));
-  const anchor = document.createElement('a');
-  anchor.href = url;
-  anchor.download = 'notes.md';
-  anchor.click();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
-};
 new ResizeObserver(() => { if (loaded && !$('notes').hidden) updateEditor(); }).observe($('editor'));
 
 $('settings-tab').onclick = () => showView('settings');
@@ -904,10 +1101,11 @@ function formatIpList(ips) {
 }
 
 function formatUptime(seconds) {
-  if (seconds == null || seconds < 0) return '—';
-  const days = Math.floor(seconds / 86400);
-  const hours = Math.floor((seconds % 86400) / 3600);
-  const minutes = Math.floor((seconds % 3600) / 60);
+  const value = Number(seconds);
+  if (!Number.isFinite(value) || value < 0) return '—';
+  const days = Math.floor(value / 86400);
+  const hours = Math.floor((value % 86400) / 3600);
+  const minutes = Math.floor((value % 3600) / 60);
   if (days > 0) return `${days}d ${hours}h`;
   if (hours > 0) return `${hours}h ${minutes}m`;
   if (minutes > 0) return `${minutes}m`;
@@ -1031,6 +1229,300 @@ async function loadInfrastructure({ refresh = false } = {}) {
 
 $('infra-refresh').onclick = () => loadInfrastructure({ refresh: true });
 
+let infraScripts = [];
+let activeInfraScriptId = null;
+let infraScriptMenuOpen = false;
+let scriptEditorId = null;
+let scriptRunState = 'idle';
+let lastScriptResult = null;
+
+function setRunButtonState(state) {
+  scriptRunState = state;
+  const button = $('infra-run-script');
+  button.classList.remove('is-running', 'is-success', 'is-error');
+  if (state === 'running') button.classList.add('is-running');
+  if (state === 'success') button.classList.add('is-success');
+  if (state === 'error') button.classList.add('is-error');
+  button.title = state === 'success'
+    ? 'Script succeeded — click to view output'
+    : state === 'error'
+      ? 'Script failed — click to view error'
+      : 'Run selected script';
+}
+
+function resetRunButtonState() {
+  lastScriptResult = null;
+  setRunButtonState('idle');
+}
+
+function formatScriptOutputTimestamp(date = new Date()) {
+  const pad = value => String(value).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}-${pad(date.getMinutes())}-${pad(date.getSeconds())}`;
+}
+
+function buildScriptOutputFilename(scriptName) {
+  const safeName = String(scriptName || 'script').trim()
+    .replace(/[^\w.\- ]+/g, '')
+    .replace(/\s+/g, ' ')
+    .slice(0, 60) || 'script';
+  return `${safeName}-output-${formatScriptOutputTimestamp()}.txt`;
+}
+
+function showScriptOutputDialog() {
+  if (!lastScriptResult) return;
+  $('script-output-title').textContent = lastScriptResult.success ? 'Script succeeded' : 'Script failed';
+  $('script-output-meta').textContent = lastScriptResult.name || '';
+  $('script-output-text').textContent = lastScriptResult.output || '(no output)';
+  $('script-output-save-status').textContent = '';
+  const dialog = $('script-output-dialog');
+  dialog.classList.toggle('is-success', lastScriptResult.success);
+  dialog.classList.toggle('is-error', !lastScriptResult.success);
+  dialog.showModal();
+}
+
+async function saveScriptOutput() {
+  if (!lastScriptResult) return;
+  const button = $('script-output-save');
+  const status = $('script-output-save-status');
+  const file = buildScriptOutputFilename(lastScriptResult.name);
+  const text = lastScriptResult.output || '';
+  button.disabled = true;
+  status.textContent = 'Saving…';
+  try {
+    const data = await api('/api/notes', { method: 'PUT', body: JSON.stringify({ text, file }) });
+    const savedPath = data.path || (notesDirectory ? `${notesDirectory}\\${data.file || file}` : (data.file || file));
+    status.textContent = `Saved as ${data.file || file}`;
+    status.title = savedPath;
+  } catch (error) {
+    status.textContent = error.message || 'Could not save output.';
+    status.title = '';
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function renderInfraScriptMenu(scripts, active) {
+  activeInfraScriptId = active;
+  const current = scripts.find(script => script.id === active);
+  $('infra-script-current').textContent = current?.name || (scripts.length ? 'Select script' : 'No scripts');
+  $('infra-run-script').disabled = !current;
+  $('infra-script-menu').replaceChildren(...scripts.map(script => {
+    const option = document.createElement('button');
+    option.type = 'button';
+    option.className = `infra-script-option${script.id === active ? ' active' : ''}`;
+    option.role = 'option';
+    option.setAttribute('aria-selected', String(script.id === active));
+    option.textContent = script.name;
+    option.title = script.name;
+    option.onclick = () => {
+      closeInfraScriptMenu();
+      selectInfraScript(script.id).catch(() => {});
+    };
+    return option;
+  }));
+}
+
+function closeInfraScriptMenu() {
+  $('infra-script-menu').hidden = true;
+  $('infra-script-trigger').setAttribute('aria-expanded', 'false');
+  infraScriptMenuOpen = false;
+}
+
+function openInfraScriptMenu() {
+  $('infra-script-menu').hidden = false;
+  $('infra-script-trigger').setAttribute('aria-expanded', 'true');
+  infraScriptMenuOpen = true;
+}
+
+function toggleInfraScriptMenu() {
+  if (infraScriptMenuOpen) closeInfraScriptMenu();
+  else openInfraScriptMenu();
+}
+
+async function loadInfraScripts() {
+  try {
+    const data = await api('/api/scripts');
+    infraScripts = data.scripts || [];
+    renderInfraScriptMenu(infraScripts, data.active || infraScripts[0]?.id || null);
+  } catch {
+    $('infra-script-current').textContent = 'Scripts unavailable';
+    $('infra-run-script').disabled = true;
+    resetRunButtonState();
+  }
+}
+
+async function selectInfraScript(id) {
+  const data = await api('/api/scripts', { method: 'PUT', body: JSON.stringify({ active: id }) });
+  infraScripts = data.scripts || [];
+  resetRunButtonState();
+  renderInfraScriptMenu(infraScripts, data.active || id);
+}
+
+async function executeInfraScript() {
+  if (!activeInfraScriptId) return;
+  const button = $('infra-run-script');
+  setRunButtonState('running');
+  button.disabled = true;
+  try {
+    const data = await api('/api/scripts/run', { method: 'POST', body: JSON.stringify({ id: activeInfraScriptId }) });
+    lastScriptResult = {
+      success: data.success,
+      output: data.output || (data.success ? 'Script completed with no output.' : `Exit code ${data.exitCode}`),
+      exitCode: data.exitCode,
+      name: data.script?.name || $('infra-script-current').textContent,
+    };
+    setRunButtonState(data.success ? 'success' : 'error');
+  } catch (error) {
+    lastScriptResult = {
+      success: false,
+      output: error.message || 'Could not run script.',
+      name: $('infra-script-current').textContent,
+    };
+    setRunButtonState('error');
+  } finally {
+    button.disabled = !activeInfraScriptId;
+  }
+}
+
+async function handleRunButtonClick() {
+  if (!activeInfraScriptId || scriptRunState === 'running') return;
+  if (scriptRunState === 'success' || scriptRunState === 'error') {
+    showScriptOutputDialog();
+    return;
+  }
+  await executeInfraScript();
+}
+
+function fillScriptEditor(script) {
+  scriptEditorId = script?.id || null;
+  $('script-name').value = script?.name || '';
+  $('script-shell').value = script?.shell === 'batch' ? 'batch' : 'powershell';
+  $('script-content').value = script?.content || '';
+}
+
+function renderScriptLibrary(scripts, selectedId) {
+  const select = $('script-library');
+  select.replaceChildren(...scripts.map(script => {
+    const option = document.createElement('option');
+    option.value = script.id;
+    option.textContent = script.name;
+    option.selected = script.id === selectedId;
+    return option;
+  }));
+  if (!scripts.length) {
+    const option = document.createElement('option');
+    option.value = '';
+    option.textContent = 'No saved scripts';
+    select.append(option);
+  }
+}
+
+async function loadScriptEditor() {
+  try {
+    const data = await api('/api/scripts');
+    const scripts = data.scripts || [];
+    infraScripts = scripts;
+    const selected = scriptEditorId && scripts.some(script => script.id === scriptEditorId)
+      ? scriptEditorId
+      : (data.active || scripts[0]?.id || null);
+    renderScriptLibrary(scripts, selected);
+    fillScriptEditor(scripts.find(script => script.id === selected) || null);
+    $('script-delete').disabled = !selected;
+    $('script-save-status').textContent = scripts.length ? '' : 'Create your first script below.';
+  } catch (error) {
+    $('script-save-status').textContent = error.message || 'Could not load scripts.';
+  }
+}
+
+async function saveScriptEditor() {
+  const button = $('script-save');
+  button.disabled = true;
+  try {
+    const payload = {
+      id: scriptEditorId || undefined,
+      name: $('script-name').value,
+      shell: $('script-shell').value,
+      content: $('script-content').value,
+    };
+    const data = await api('/api/scripts', { method: 'PUT', body: JSON.stringify(payload) });
+    scriptEditorId = data.savedId || scriptEditorId;
+    const saved = data.scripts.find(script => script.id === scriptEditorId) || null;
+    renderScriptLibrary(data.scripts, scriptEditorId);
+    fillScriptEditor(saved || null);
+    $('script-delete').disabled = !scriptEditorId;
+    $('script-save-status').textContent = 'Script saved.';
+    if (!$('infrastructure').hidden) await loadInfraScripts();
+    else {
+      infraScripts = data.scripts || [];
+      activeInfraScriptId = data.active || scriptEditorId;
+    }
+  } catch (error) {
+    $('script-save-status').textContent = error.message || 'Could not save script.';
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function deleteScriptEditor() {
+  if (!scriptEditorId) return;
+  const name = $('script-name').value || 'this script';
+  if (!confirm(`Delete "${name}"?`)) return;
+  try {
+    const data = await api('/api/scripts', { method: 'DELETE', body: JSON.stringify({ id: scriptEditorId }) });
+    scriptEditorId = data.active || null;
+    renderScriptLibrary(data.scripts, scriptEditorId);
+    fillScriptEditor(data.scripts.find(script => script.id === scriptEditorId) || null);
+    $('script-delete').disabled = !scriptEditorId;
+    $('script-save-status').textContent = 'Script deleted.';
+    if (!$('infrastructure').hidden) await loadInfraScripts();
+  } catch (error) {
+    $('script-save-status').textContent = error.message || 'Could not delete script.';
+  }
+}
+
+$('infra-script-trigger').onclick = event => { event.stopPropagation(); toggleInfraScriptMenu(); };
+$('infra-run-script').onclick = () => { handleRunButtonClick(); };
+$('script-output-save').onclick = () => { saveScriptOutput(); };
+$('script-output-close').onclick = () => { $('script-output-dialog').close(); };
+$('script-output-run-again').onclick = () => {
+  $('script-output-dialog').close();
+  resetRunButtonState();
+  executeInfraScript();
+};
+document.addEventListener('click', event => {
+  if (infraScriptMenuOpen && !$('infra-script-picker').contains(event.target)) closeInfraScriptMenu();
+});
+document.addEventListener('keydown', event => {
+  if (event.key === 'Escape' && infraScriptMenuOpen) closeInfraScriptMenu();
+});
+$('script-library').onchange = async () => {
+  const id = $('script-library').value;
+  scriptEditorId = id || null;
+  if (!id) {
+    fillScriptEditor(null);
+    $('script-delete').disabled = true;
+    return;
+  }
+  try {
+    const data = await api('/api/scripts');
+    infraScripts = data.scripts || [];
+    fillScriptEditor(infraScripts.find(item => item.id === id) || null);
+    $('script-delete').disabled = false;
+  } catch (error) {
+    $('script-save-status').textContent = error.message;
+  }
+};
+$('script-new').onclick = () => {
+  scriptEditorId = null;
+  fillScriptEditor(null);
+  $('script-library').value = '';
+  $('script-delete').disabled = true;
+  $('script-save-status').textContent = 'Creating new script…';
+  $('script-name').focus();
+};
+$('script-save').onclick = () => { saveScriptEditor(); };
+$('script-delete').onclick = () => { deleteScriptEditor(); };
+
 function loadGradientPrefs() {
   return {
     start: localStorage.getItem('gradientStart') || DEFAULT_GRADIENT.start,
@@ -1113,7 +1605,7 @@ async function loadSettings() {
   try {
     const data = await api('/api/settings');
     $('notes-directory').value = data.notesDirectory;
-    $('location-status').textContent = `Current file: ${data.notesFile}`;
+    $('location-status').textContent = `Current folder: ${data.notesDirectory}`;
   } catch (error) {
     $('location-status').textContent = error.message === 'Not found' ? 'Restart Workspace to enable save-folder settings.' : error.message;
   }
@@ -1128,7 +1620,9 @@ $('location-form').onsubmit = async event => {
     if (dirty) throw new Error('Save your notes successfully before changing folders.');
     const data = await api('/api/settings', { method: 'PUT', body: JSON.stringify({ notesDirectory: $('notes-directory').value }) });
     $('notes-directory').value = data.notesDirectory;
-    $('location-status').textContent = `Saved. Current file: ${data.notesFile}`;
+    await refreshNotesFiles(data.activeNotesFile || currentNotesFile);
+    await openNotesFile(currentNotesFile);
+    $('location-status').textContent = `Saved. Current folder: ${data.notesDirectory}`;
   } catch (error) {
     $('location-status').textContent = error.message;
   } finally {
@@ -1189,4 +1683,5 @@ if (sessionStorage.getItem('noaFreshStart')) {
   else showView(localStorage.getItem('notesOpen') === 'true' ? 'notes' : 'terminal');
 }
 loadSettings();
+loadInfraScripts();
 initTabs().catch(error => { $('connection').textContent = error.message || 'Could not start terminals'; });

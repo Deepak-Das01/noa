@@ -1,11 +1,29 @@
-# Terminal Workspace
+# Noa
 
-**Current version: 0.2.2**  
-**Release date: 2026-09-10**  
-**Product name: Noa** (Terminal Workspace)  
-**Status: Windows x64 portable release with bundled dependencies; validated on the development PC, not across all Windows devices.**
+**Product:** Noa (Terminal Workspace)  
+**Current version:** 0.2.3  
+**Release date:** 2026-09-11  
+**Default URL:** [http://127.0.0.1:8765](http://127.0.0.1:8765)  
+**Canonical dev folder:** `C:\Projects\noa`  
+**Public repository:** [github.com/Deepak-Das01/noa](https://github.com/Deepak-Das01/noa)  
+**Status:** Windows x64 portable app with bundled dependencies; validated on the development PC, not across all Windows devices.
 
-Terminal Workspace is a local browser application combining interactive terminals, an autosaving notes editor, hypervisor/VM infrastructure view, and workspace settings. It runs on **`http://127.0.0.1:8765`** by default (override with `PORT`). The header title is **never hardcoded to a person or PC** — on each machine it becomes `{Windows username}'s Workspace` (for example `Alex's Workspace` on another laptop). Detection uses the signed-in Windows account (`USERNAME`, `os.userInfo()`, or the user profile folder), then falls back to the computer name. Set `WORKSPACE_TITLE` only if you want a custom full title. The app does not require Codex, an account, or a hosted service. No host-specific paths are hardcoded; each PC is detected at runtime.
+Noa is a **local Windows workspace** that runs in your browser on a single machine. It combines a multi-tab terminal, autosaving notes, VM infrastructure monitoring, and settings — without cloud accounts, subscriptions, or hardcoded paths tied to one laptop.
+
+## What Noa includes
+
+| Area | What you get |
+| --- | --- |
+| **Terminal** | Up to 5 tabs (local PowerShell/Git Bash or remote SSH), split view, copy/clear, font controls, reconnect after refresh |
+| **Notes** | Multi-file `.txt`/`.md` editor with autosave, rename, delete, find, wrap, and configurable save folder |
+| **Infrastructure** | Detects Hyper-V, VirtualBox, and VMware on this PC; VM cards with CPU, RAM, storage, IP, uptime; run saved scripts with output popup |
+| **Settings** | 50/50 layout: preferences + live system monitor (CPU/RAM/GPU) on the left, full README guide on the right |
+| **Themes** | Dark, Light, Glass (acrylic), and customizable Gradient |
+| **Branding** | “Welcome to Noa” tagline, Cortana-style ring logo with slow glow animation |
+| **Portability** | Works on any laptop: title uses `{username}'s Workspace`, VM paths detected at runtime, personal data stays in `data\` per PC |
+| **Distribution** | Portable ZIP with `node_modules`, git clone workflow, multi-laptop setup documented below |
+
+The header title is **never hardcoded** — on each machine it becomes `{Windows username}'s Workspace` (for example `Alex's Workspace` on another laptop). Set `WORKSPACE_TITLE` only if you want a custom full title. After restart or page load, Noa keeps **one default local terminal** and opens the **Terminal** view.
 
 ## Features
 
@@ -20,13 +38,16 @@ Terminal Workspace is a local browser application combining interactive terminal
 - Copy copies selected terminal text; Clear clears the terminal display.
 - A connection badge reports the active tab’s connection state. The browser reconnects to existing server sessions after reload.
 - Responsive fitting keeps terminal rows within the available content area, including after resizing, font changes, and returning from Notes.
-- After typing `exit`, Restart shell starts a new shell in the active tab.
+- After typing `exit`, **Restart shell** starts a new shell in the active tab (shows a brief reload animation).
+- On load or app restart, extra terminal sessions are closed so **one default terminal** remains.
 
 ### Notes
 
-- One notes document, saved as `notes.md`.
-- Autosaves approximately 400 ms after typing stops. Save and Ctrl+S also save.
-- Find / Find next, word wrap, line-number toggle, text-size controls, and Export.
+- Multiple note files (`.txt` and `.md`) in your notes folder.
+- **+** creates a new `.txt` file; the dropdown selects which file to edit; **Delete** removes the current file after confirmation; double-click the file name to rename.
+- The status bar shows the full path to the open file on this PC.
+- Autosaves approximately 400 ms after typing stops, on tab switch, refresh, restart, and browser close. Ctrl+S also saves.
+- Find / Find next, word wrap, line-number toggle, and text-size controls.
 - Status bar shows line, column, UTF-8, word count, and save state.
 - The notes endpoint accepts up to 1 MB per save request.
 
@@ -34,6 +55,7 @@ Terminal Workspace is a local browser application combining interactive terminal
 
 - Split layout: **50/50** panels — settings and system monitor on the left, full **README.md** product guide on the right.
 - **System monitor** shows live CPU, memory, and GPU usage (Windows performance counters / `nvidia-smi` when available). Updates every few seconds while Settings is open.
+- **Infrastructure scripts** — create, edit, and save PowerShell or Batch scripts stored in `data\scripts.json` on this PC (not in git).
 - Appearance settings offer four themes: **Dark**, **Light**, **Glass** (Windows acrylic-style translucent surfaces), and **Gradient** (custom start/end/accent colors plus angle). Theme and gradient choices are stored in browser local storage and affect the workspace and terminal. Refresh the browser to see theme changes; no server restart is required.
 - Save-folder field accepts an absolute folder path and creates the folder if needed and permitted.
 - Changing the save folder copies the current notes; the original remains in place.
@@ -43,10 +65,12 @@ Terminal Workspace is a local browser application combining interactive terminal
 ### Infrastructure
 
 - **Infrastructure** navigation shows hypervisors detected on this Windows PC.
+- **Run** executes a saved script selected from the dropdown below **Refresh**. The button glows while running, turns **green** on success or **red** on failure; click it to open a popup with the full output. **Save** writes the output to your notes folder as `scriptname-output-YYYY-MM-DD HH-MM-SS.txt`.
+- Create and manage scripts in **Settings → Infrastructure scripts** (PowerShell or Batch).
 - Supported scanners: **Hyper-V**, **VirtualBox**, and **VMware Workstation/Player**.
 - VMware VMs are discovered from the Workstation inventory (`inventory.vmls`), VMware preferences, registry install paths, and each VM's own folder on the current PC. No VM paths are hardcoded in the app.
 - Each detected hypervisor lists its virtual machines as cards with status, CPU, RAM, storage, IP address, and uptime.
-- IP and uptime appear when a VM is **running** and guest tools/reporting are available (Hyper-V network adapters, VirtualBox guest properties, VMware Tools via `vmrun`).
+- IP and uptime appear when a VM is **running**. VMware IPs are resolved from each VM’s MAC address in VMware DHCP lease files on that PC, then guestinfo/neighbor data, with guest-tools (`vmrun`) only as a last resort.
 - VMware disk size reads split/sparse VMDK descriptors (not just the small descriptor file).
 - Click **Refresh** to rescan. Results are cached briefly to keep the UI responsive.
 
@@ -67,26 +91,29 @@ Compact Windows Fluent-inspired styling with a slim header, segmented navigation
 
 This release is a portable **source application**, not a standalone executable. The distribution ZIP bundles `node_modules` for **Windows x64**, so internet access is not required on the destination PC for the first launch. Other Windows versions and ARM64 devices have not been physically validated. If native modules fail on the destination architecture, run `Setup Workspace.cmd` to rebuild them locally; Microsoft's C++ build tools may be required in that case.
 
-## Distribution package (0.2.1)
+## Distribution package (0.2.3)
 
 | Item | Detail |
 | --- | --- |
-| **File name** | `TerminalWorkspace-0.2.1-Windows.zip` |
+| **File name** | `TerminalWorkspace-0.2.3-Windows.zip` (build with `package-release.ps1`) |
 | **Approx. size** | ~17 MB (includes `node_modules`) |
 | **Target** | Windows 10/11 x64 |
 | **Node.js** | 22 or 24 LTS required on the destination PC (not bundled) |
+| **Default port** | 8765 |
 
 ### ZIP folder layout
 
 After extraction you get one folder:
 
 ```text
-TerminalWorkspace-0.2.1/
+TerminalWorkspace-0.2.3/
   INSTALL.txt                Quick install steps (same as below)
-  package.json               Version 0.2.1 and dependency list
+  package.json               Version 0.2.3 and dependency list
   package-lock.json          Locked dependency versions
   server.mjs                 HTTP API and terminal sessions
   infrastructure.mjs         Hypervisor and VM detection (Windows)
+  scripts.mjs                Infrastructure script storage and execution
+  system.mjs                 CPU, memory, and GPU stats (Windows)
   public/                    Frontend (HTML, CSS, JavaScript)
   node_modules/              Pre-installed dependencies (Windows x64)
   data/                      Empty on first install (.gitkeep only)
@@ -123,14 +150,14 @@ On first launch on a new PC, the app creates fresh `data\` files and uses the ne
 
 ## First-time installation
 
-Use **`TerminalWorkspace-0.2.1-Windows.zip`**.
+Use **`TerminalWorkspace-0.2.3-Windows.zip`** (or build the latest with `package-release.ps1`).
 
 1. Copy the ZIP to the other computer (USB drive, network share, email attachment, etc.).
 2. Extract the entire ZIP into a writable folder, for example:
-   `C:\Users\YourName\Documents\TerminalWorkspace-0.2.1`
+   `C:\Users\YourName\Documents\Noa`
    Do **not** run directly from inside the ZIP. Do **not** install into `Program Files`.
 3. Install [Node.js 22 or 24 LTS](https://nodejs.org/) (64-bit) if it is not already installed. Reopen PowerShell or Command Prompt afterward so `node` is on PATH.
-4. Open the extracted `TerminalWorkspace-0.2.1` folder and double-click **`Start Workspace.cmd`**. Your browser should open automatically.
+4. Open the extracted folder and double-click **`Start Workspace.cmd`**. Your browser should open at **`http://127.0.0.1:8765`**.
 5. If Start reports missing or incompatible dependencies, run **`Setup Workspace.cmd`** once, then start again.
 
 See **`INSTALL.txt`** inside the extracted folder for the same steps.
@@ -138,7 +165,7 @@ See **`INSTALL.txt`** inside the extracted folder for the same steps.
 From PowerShell:
 
 ```powershell
-cd "C:\Users\YourName\Documents\TerminalWorkspace-0.2.1"
+cd "C:\Users\YourName\Documents\Noa"
 & ".\Start Workspace.cmd"
 ```
 
@@ -151,7 +178,7 @@ The quoted filenames and `&` are required because launcher filenames contain spa
 | **Start Workspace.cmd** | Every normal launch. Dependencies are already in the ZIP. |
 | **Setup Workspace.cmd** | Only if Start fails with a missing or incompatible native module, or after changing `package.json` dependencies. Runs `npm install` on that PC. |
 
-You do **not** need to run Setup on a typical Windows x64 PC when using the 0.2.1 ZIP as shipped.
+You do **not** need to run Setup on a typical Windows x64 PC when using the 0.2.3 ZIP as shipped.
 
 ## Start, restart, and stop
 
@@ -271,7 +298,7 @@ Then run **`Start Workspace.cmd`**. Do **not** copy another PC’s `data\` folde
 
 ### Transfer without git (ZIP)
 
-1. Build or copy **`TerminalWorkspace-0.2.2-Windows.zip`** (or rebuild with `package-release.ps1`).
+1. Build or copy **`TerminalWorkspace-0.2.3-Windows.zip`** (or rebuild with `package-release.ps1`).
 2. On the destination: extract, install Node.js 22+, run **`Start Workspace.cmd`**.
 3. If native modules fail (unusual on matching Windows x64), run **`Setup Workspace.cmd`** on that PC only.
 
@@ -299,7 +326,7 @@ cd "C:\path\to\TerminalWorkspace"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\package-release.ps1"
 ```
 
-This creates **`TerminalWorkspace-0.2.1-Windows.zip`** in the project folder. The script:
+This creates **`TerminalWorkspace-<version>-Windows.zip`** in the project folder (for example `TerminalWorkspace-0.2.3-Windows.zip`). The script:
 
 - Reads the version from `package.json`.
 - Copies the project including `node_modules`.
@@ -331,12 +358,13 @@ After rebuilding, update this README if the version or packaging behavior change
 ## Project structure
 
 ```text
-TerminalWorkspace/
+noa/  (or TerminalWorkspace-<version>/ in the ZIP)
   public/index.html          Application markup
   public/style.css           Themes, layout, responsive styles
   public/app.js              UI, notes, settings, terminal client
   server.mjs                 HTTP APIs and terminal sessions
   infrastructure.mjs         Hypervisor and VM detection (Windows)
+  system.mjs                 CPU, memory, GPU monitor (Windows)
   package.json               Version, scripts, dependencies
   package-lock.json          npm lockfile
   pnpm-lock.yaml             pnpm dependency lock (development)
@@ -350,7 +378,7 @@ TerminalWorkspace/
   AGENTS.md                  Contributor change-documentation rules
   README.md                  Usage, release history, known limits
   data/                      Local user data; excluded from release ZIP
-  TerminalWorkspace-0.2.1-Windows.zip   Portable distribution (when built)
+  TerminalWorkspace-0.2.3-Windows.zip   Portable distribution (when built)
 ```
 
 ## Development and validation
@@ -367,7 +395,7 @@ The integration smoke test covers HTTP assets, notes persistence, access checks,
 
 ## Versioning and change-documentation policy
 
-The current application baseline is **0.2.2**. `package.json` is the version source; keep this README synchronized with it. Do not bump the version merely for every edit. When preparing a new release, select the appropriate version and date, and move the accumulated Unreleased entries into that release section.
+The current application baseline is **0.2.3**. `package.json` is the version source; keep this README synchronized with it. Do not bump the version merely for every edit. When preparing a new release, select the appropriate version and date, and move the accumulated Unreleased entries into that release section.
 
 **Every future change must be recorded in this README in the same update**, including UI changes, features, fixes, behavior changes, dependency changes, and documentation corrections. Add concise entries under Unreleased, describing what changed, relevant validation, and any migration or restart requirement. Update affected usage instructions and known limitations as well. Keep previous release entries intact. Refresh the distribution ZIP whenever a release package is delivered.
 
@@ -375,38 +403,67 @@ The current application baseline is **0.2.2**. `package.json` is the version sou
 
 ### Unreleased
 
-- 2026-09-10: Restart app and Restart shell now show a full-screen reload animation until the workspace is ready. After restart or page load, only **one default terminal** is kept open and Terminal is the active view.
-- 2026-09-10: Default listen port is now **8765** (`http://127.0.0.1:8765`). Restart the app to apply; set `PORT` to override.
-- 2026-09-10: Established `C:\Projects\noa` as the canonical dev directory; documented GitHub workflow, multi-laptop rules, and stricter `.gitignore` so personal `data\` never enters the public repo (see AGENTS.md).
+_No unreleased changes._
 
-### 0.2.2 — 2026-09-10
+### 0.2.3 — 2026-09-11
 
-**Noa** release **`TerminalWorkspace-0.2.2-Windows.zip`** (build with `package-release.ps1`). Portable Windows x64 package with bundled `node_modules`, full README, `INSTALL.txt`, and no host-specific data.
+**Noa** — build **`TerminalWorkspace-0.2.3-Windows.zip`** with `package-release.ps1`. Restart the app after server changes (`/api/notes/files`, `/api/scripts`); refresh the browser for UI updates.
 
-**Branding and header**
+**Notes**
 
-- Tagline changed to **Welcome to Noa**
-- New Cortana-style circular ring logo with very slow, smooth glow animation (opacity/scale; respects reduced motion)
-- Workspace title resolved from the **current PC's Windows username** at startup (`USERNAME`, `os.userInfo()`, profile folder, then hostname). Optional `WORKSPACE_TITLE` overrides the full title. Not hardcoded to any user or machine.
-
-**Settings**
-
-- **50/50 split layout**: settings and controls on the left, live **README.md** product guide on the right (`GET /api/readme`)
-- Elevated setting cards with icons, hover states, and a matching product-guide panel
-- **System monitor** (`GET /api/system`): live CPU, memory, and GPU usage with progress bars; polls every ~2.5 s while Settings is open (Windows performance counters; `nvidia-smi` when available)
+- Multiple **.txt** and **.md** files: **+** creates files, dark custom file picker, **Delete** with confirmation, double-click rename, full path in status bar
+- Auto-save on edit, tab switch, refresh, restart, and browser close (manual Save/Export removed)
 
 **Infrastructure**
 
-- VM cards show **IP address** and **uptime** for running VMs (Hyper-V adapters, VirtualBox guest properties, VMware Tools / `vmrun`)
-- VMware **storage** reads split/sparse VMDK descriptors (fixes 0 GB display)
-- VM card layout: resources row (CPU/RAM/storage) + network row (IP/uptime) to prevent overlap
-- VMware uptime from VM lock-file process start time
+- **Scripts** in Settings (PowerShell or Batch); run from Infrastructure with dropdown; **Run** glows green/red; output in popup; **Save** writes to notes folder
+- VMware **IP** from ISC DHCP lease files matched to each VM MAC (no hardcoded subnets; `vmrun` last resort)
+- VMware **uptime** via `vmware-vmx` process matching when lock-file PIDs are stale
+
+**Validation:** `npm test` smoke checks; no personal `data\` files in git or release ZIP.
+
+### 0.2.2 — 2026-09-10
+
+**Noa** — full feature release. Build **`TerminalWorkspace-0.2.2-Windows.zip`** with `package-release.ps1`. Portable Windows x64 package with bundled `node_modules`, full README, `INSTALL.txt`, and no host-specific data. Default URL: **`http://127.0.0.1:8765`**.
+
+**Project and portability**
+
+- Canonical development folder: **`C:\Projects\noa`**
+- Public git repository: **[github.com/Deepak-Das01/noa](https://github.com/Deepak-Das01/noa)** (`main` branch only)
+- Multi-laptop design: each PC keeps its own `data\`, browser storage, and detected VMs; code syncs via git
+- Stricter **`.gitignore`** so notes, settings, logs, and runtime never enter the public repo (see `AGENTS.md`)
+
+**Branding and header**
+
+- Product name **Noa** with tagline **Welcome to Noa**
+- Cortana-style circular ring logo with very slow, smooth glow animation (respects reduced motion)
+- Workspace title from the **current PC's Windows username** at startup — not hardcoded (`WORKSPACE_TITLE` optional override)
+
+**Terminal and restart**
+
+- Default listen port **8765** (`PORT` env to override; `0` = random port)
+- **Restart app** and **Restart shell** show a full-screen reload animation until the workspace is ready
+- After restart or page load: **one default terminal** kept, split view reset, Terminal view active
+
+**Settings**
+
+- **50/50 split layout**: preferences + system monitor on the left, live **README.md** product guide on the right (`GET /api/readme`)
+- Elevated setting cards with icons, hover states, and matching product-guide panel
+- **System monitor** (`GET /api/system`): live CPU, memory, and GPU usage; polls every ~2.5 s while Settings is open
+
+**Infrastructure**
+
+- VM cards: status, CPU, RAM, storage, **IP address**, and **uptime** (when VM is running)
+- VMware storage reads split/sparse **VMDK** descriptors (fixes 0 GB display)
+- Two-row VM card layout (resources + network) to prevent IP/uptime overlap
+- VMware uptime via running `vmware-vmx` process start time matched to each VM lock file (with lock-file fallback)
+- Portable detection: Hyper-V, VirtualBox, VMware inventory/registry on each PC (`WORKSPACE_INFRA_VM_PATHS` optional)
 
 **Fixes**
 
 - `Start Workspace.ps1` Node version check fixed for PowerShell on Node 22+
 
-**Validation:** Restart the app after server updates (`/api/readme`, `/api/system`, infrastructure, workspace title). Refresh the browser for UI/CSS changes. Run `npm test` for smoke checks.
+**Validation:** Restart the app after server changes. Refresh the browser for UI/CSS. Run `npm test` for smoke checks.
 
 ### 0.2.1 — 2026-09-10
 

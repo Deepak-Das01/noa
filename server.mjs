@@ -11,6 +11,7 @@ import pty from 'node-pty';
 import { Client as SshClient } from 'ssh2';
 import { getInfrastructure } from './infrastructure.mjs';
 import { getSystemStats } from './system.mjs';
+import { createScriptsStore } from './scripts.mjs';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_PORT = 8765;
@@ -57,9 +58,85 @@ const escapeHtml = value => String(value).replace(/[&<>"']/g, char => ({ '&': '&
 const dataDir = process.env.WORKSPACE_DATA_DIR || path.join(root, 'data');
 fs.mkdirSync(dataDir, { recursive: true });
 const settingsFile = path.join(dataDir, 'settings.json');
-let settings = { notesDirectory: dataDir };
-try { settings = { ...settings, ...JSON.parse(fs.readFileSync(settingsFile, 'utf8')) }; } catch {}
-let notesFile = path.join(settings.notesDirectory, 'notes.md');
+const scriptsStore = createScriptsStore(dataDir);
+let settings = { notesDirectory: dataDir, activeNotesFile: 'notes.md' };
+try { settings = { ...settings, activeNotesFile: 'notes.md', ...JSON.parse(fs.readFileSync(settingsFile, 'utf8')) }; } catch {}
+
+function persistSettings() {
+  fs.writeFileSync(settingsFile + '.tmp', JSON.stringify(settings, null, 2));
+  fs.renameSync(settingsFile + '.tmp', settingsFile);
+}
+
+function notesDirectoryPath() {
+  return path.resolve(settings.notesDirectory);
+}
+
+function safeNotesFilename(name) {
+  const base = path.basename(String(name || '').trim());
+  if (!/^[\w.\- ]+\.(txt|md)$/i.test(base)) return null;
+  return base;
+}
+
+function listNotesFiles() {
+  const dir = notesDirectoryPath();
+  fs.mkdirSync(dir, { recursive: true });
+  try {
+    return fs.readdirSync(dir, { withFileTypes: true })
+      .filter(entry => entry.isFile() && /\.(txt|md)$/i.test(entry.name))
+      .map(entry => entry.name)
+      .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+  } catch {
+    return [];
+  }
+}
+
+function getActiveNotesFile() {
+  const active = safeNotesFilename(settings.activeNotesFile);
+  if (active && fs.existsSync(path.join(notesDirectoryPath(), active))) return active;
+  const files = listNotesFiles();
+  return files[0] || 'notes.md';
+}
+
+function resolveNotesPath(name) {
+  const filename = safeNotesFilename(name) || getActiveNotesFile();
+  return path.join(notesDirectoryPath(), filename);
+}
+
+function setActiveNotesFile(name) {
+  const safe = safeNotesFilename(name);
+  if (!safe) return false;
+  const full = path.join(notesDirectoryPath(), safe);
+  if (!fs.existsSync(full)) return false;
+  settings.activeNotesFile = safe;
+  persistSettings();
+  return true;
+}
+
+function uniqueNewTxtName() {
+  const dir = notesDirectoryPath();
+  let index = 1;
+  let name = `note-${index}.txt`;
+  while (fs.existsSync(path.join(dir, name))) {
+    index += 1;
+    name = `note-${index}.txt`;
+  }
+  return name;
+}
+
+function ensureDefaultNotesFile() {
+  const dir = notesDirectoryPath();
+  fs.mkdirSync(dir, { recursive: true });
+  const files = listNotesFiles();
+  if (!files.length) {
+    const defaultFile = path.join(dir, 'notes.md');
+    if (!fs.existsSync(defaultFile)) fs.writeFileSync(defaultFile, '', 'utf8');
+    settings.activeNotesFile = 'notes.md';
+    persistSettings();
+  }
+}
+
+ensureDefaultNotesFile();
+let notesFile = resolveNotesPath();
 const assets = new Map([
   ['/', [path.join(root, 'public/index.html'), 'text/html']],
   ['/app.js', [path.join(root, 'public/app.js'), 'text/javascript']],
@@ -283,24 +360,66 @@ const server = http.createServer(async (req, res) => {
   const json = (status, value) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(value)); };
   if (url.pathname.startsWith('/api/')) {
     if (req.headers['x-workspace-token'] !== token || (req.headers.origin && req.headers.origin !== origin)) { json(403, { error: 'Access denied' }); return; }
-    if (url.pathname === '/api/settings' && req.method === 'GET') { json(200, { notesDirectory: settings.notesDirectory, notesFile }); return; }
+    if (url.pathname === '/api/settings' && req.method === 'GET') {
+      notesFile = resolveNotesPath();
+      json(200, { notesDirectory: settings.notesDirectory, notesFile, activeNotesFile: getActiveNotesFile() });
+      return;
+    }
     if (url.pathname === '/api/settings' && req.method === 'PUT') {
       try {
         let body = ''; for await (const chunk of req) { body += chunk; if (Buffer.byteLength(body) > 8192) { json(413, { error: 'Settings too large' }); return; } }
         const { notesDirectory } = JSON.parse(body);
         if (typeof notesDirectory !== 'string' || !path.isAbsolute(notesDirectory.trim())) { json(400, { error: 'Enter a full folder path on this computer.' }); return; }
         const directory = path.resolve(notesDirectory.trim());
-        const target = path.join(directory, 'notes.md');
-        if (target.toLowerCase() !== notesFile.toLowerCase()) {
+        if (directory.toLowerCase() !== notesDirectoryPath().toLowerCase()) {
+          const previousPath = resolveNotesPath();
+          const previousContent = fs.existsSync(previousPath) ? fs.readFileSync(previousPath, 'utf8') : '';
           fs.mkdirSync(directory, { recursive: true });
-          if (fs.existsSync(target)) { json(409, { error: 'This folder already contains notes.md. Choose another folder to keep both files safe.' }); return; }
-          const contents = fs.existsSync(notesFile) ? fs.readFileSync(notesFile) : Buffer.from('');
-          fs.writeFileSync(target, contents, { flag: 'wx' });
-          try { fs.writeFileSync(settingsFile + '.tmp', JSON.stringify({ notesDirectory: directory }, null, 2)); fs.renameSync(settingsFile + '.tmp', settingsFile); } catch { json(500, { error: 'Could not save the setting. Your original notes are unchanged.' }); return; }
-          settings.notesDirectory = directory; notesFile = target;
+          settings.notesDirectory = directory;
+          const targetNotes = path.join(directory, 'notes.md');
+          if (!fs.existsSync(targetNotes) && previousContent) fs.writeFileSync(targetNotes, previousContent, { flag: 'wx' });
+          const files = listNotesFiles();
+          settings.activeNotesFile = files.includes('notes.md') ? 'notes.md' : (files[0] || 'notes.md');
+          if (!files.length) fs.writeFileSync(targetNotes, previousContent, 'utf8');
+          persistSettings();
+          notesFile = resolveNotesPath();
         }
-        json(200, { notesDirectory: settings.notesDirectory, notesFile });
+        json(200, { notesDirectory: settings.notesDirectory, notesFile, activeNotesFile: getActiveNotesFile() });
       } catch { json(400, { error: 'Cannot use this folder. Check the path and write permissions.' }); }
+      return;
+    }
+    if (url.pathname === '/api/scripts' && req.method === 'GET') {
+      json(200, scriptsStore.list());
+      return;
+    }
+    if (url.pathname === '/api/scripts' && req.method === 'PUT') {
+      try {
+        let body = ''; for await (const chunk of req) { body += chunk; if (Buffer.byteLength(body) > 262144 + 4096) { json(413, { error: 'Script too large' }); return; } }
+        const payload = JSON.parse(body || '{}');
+        if (payload.active) {
+          json(200, scriptsStore.setActive(payload.active));
+          return;
+        }
+        json(200, scriptsStore.save(payload));
+      } catch (error) { json(400, { error: error.message || 'Could not save script.' }); }
+      return;
+    }
+    if (url.pathname === '/api/scripts' && req.method === 'DELETE') {
+      try {
+        let body = ''; for await (const chunk of req) { body += chunk; if (Buffer.byteLength(body) > 4096) { json(413, { error: 'Request too large' }); return; } }
+        const { id } = JSON.parse(body || '{}');
+        if (!id) { json(400, { error: 'Script not found.' }); return; }
+        json(200, scriptsStore.delete(id));
+      } catch (error) { json(400, { error: error.message || 'Could not delete script.' }); }
+      return;
+    }
+    if (url.pathname === '/api/scripts/run' && req.method === 'POST') {
+      try {
+        let body = ''; for await (const chunk of req) { body += chunk; if (Buffer.byteLength(body) > 4096) { json(413, { error: 'Request too large' }); return; } }
+        const { id } = JSON.parse(body || '{}');
+        if (!id) { json(400, { error: 'Select a script to run.' }); return; }
+        json(200, await scriptsStore.run(id));
+      } catch (error) { json(400, { error: error.message || 'Could not run script.' }); }
       return;
     }
     if (url.pathname === '/api/infrastructure' && req.method === 'GET') {
@@ -327,12 +446,89 @@ const server = http.createServer(async (req, res) => {
       }
       return;
     }
-    if (url.pathname === '/api/notes' && req.method === 'GET') { json(200, { text: fs.existsSync(notesFile) ? fs.readFileSync(notesFile, 'utf8') : '' }); return; }
+    if (url.pathname === '/api/notes/files' && req.method === 'GET') {
+      json(200, { files: listNotesFiles(), active: getActiveNotesFile(), directory: notesDirectoryPath() });
+      return;
+    }
+    if (url.pathname === '/api/notes/files' && req.method === 'POST') {
+      try {
+        const dir = notesDirectoryPath();
+        fs.mkdirSync(dir, { recursive: true });
+        const name = uniqueNewTxtName();
+        const full = path.join(dir, name);
+        fs.writeFileSync(full, '', 'utf8');
+        setActiveNotesFile(name);
+        notesFile = full;
+        json(201, { file: name, files: listNotesFiles(), active: name, directory: dir });
+      } catch { json(400, { error: 'Could not create a new note file.' }); }
+      return;
+    }
+    if (url.pathname === '/api/notes/files' && req.method === 'PATCH') {
+      try {
+        let body = ''; for await (const chunk of req) { body += chunk; if (Buffer.byteLength(body) > 4096) { json(413, { error: 'Request too large' }); return; } }
+        const { file, newName } = JSON.parse(body || '{}');
+        const from = safeNotesFilename(file);
+        const to = safeNotesFilename(newName);
+        if (!from || !to) { json(400, { error: 'Use a valid .txt or .md file name.' }); return; }
+        const dir = notesDirectoryPath();
+        const fromPath = path.join(dir, from);
+        const toPath = path.join(dir, to);
+        if (!fs.existsSync(fromPath)) { json(404, { error: 'File not found.' }); return; }
+        if (from !== to && fs.existsSync(toPath)) { json(409, { error: 'A file with that name already exists.' }); return; }
+        if (from !== to) fs.renameSync(fromPath, toPath);
+        if (settings.activeNotesFile === from) {
+          settings.activeNotesFile = to;
+          persistSettings();
+        }
+        notesFile = resolveNotesPath(getActiveNotesFile());
+        json(200, { from, file: to, files: listNotesFiles(), active: getActiveNotesFile(), directory: dir });
+      } catch { json(400, { error: 'Could not rename note file.' }); }
+      return;
+    }
+    if (url.pathname === '/api/notes/files' && req.method === 'DELETE') {
+      try {
+        let body = ''; for await (const chunk of req) { body += chunk; if (Buffer.byteLength(body) > 4096) { json(413, { error: 'Request too large' }); return; } }
+        const { file } = JSON.parse(body || '{}');
+        const target = safeNotesFilename(file);
+        if (!target) { json(400, { error: 'Invalid note file.' }); return; }
+        const dir = notesDirectoryPath();
+        const full = path.join(dir, target);
+        if (!fs.existsSync(full)) { json(404, { error: 'File not found.' }); return; }
+        const wasActive = getActiveNotesFile() === target;
+        fs.unlinkSync(full);
+        let remaining = listNotesFiles();
+        if (!remaining.length) {
+          const defaultFile = path.join(dir, 'notes.md');
+          fs.writeFileSync(defaultFile, '', 'utf8');
+          remaining = listNotesFiles();
+        }
+        const active = wasActive ? (remaining.includes('notes.md') ? 'notes.md' : remaining[0]) : getActiveNotesFile();
+        settings.activeNotesFile = active;
+        persistSettings();
+        notesFile = resolveNotesPath(active);
+        json(200, { deleted: target, files: remaining, active, directory: dir });
+      } catch { json(400, { error: 'Could not delete note file.' }); }
+      return;
+    }
+    if (url.pathname === '/api/notes' && req.method === 'GET') {
+      const file = safeNotesFilename(url.searchParams.get('file')) || getActiveNotesFile();
+      const full = resolveNotesPath(file);
+      json(200, { text: fs.existsSync(full) ? fs.readFileSync(full, 'utf8') : '', file, path: full, directory: notesDirectoryPath() });
+      return;
+    }
     if (url.pathname === '/api/notes' && req.method === 'PUT') {
       try {
         let body = ''; for await (const chunk of req) { body += chunk; if (Buffer.byteLength(body) > 1024 * 1024) { json(413, { error: 'Notes exceed 1 MB' }); return; } }
-        const { text } = JSON.parse(body); if (typeof text !== 'string') throw new Error('Invalid notes');
-        fs.writeFileSync(notesFile + '.tmp', text, 'utf8'); fs.renameSync(notesFile + '.tmp', notesFile); json(200, { saved: true });
+        const { text, file } = JSON.parse(body);
+        if (typeof text !== 'string') throw new Error('Invalid notes');
+        const target = safeNotesFilename(file) || getActiveNotesFile();
+        const full = resolveNotesPath(target);
+        fs.mkdirSync(notesDirectoryPath(), { recursive: true });
+        fs.writeFileSync(full + '.tmp', text, 'utf8');
+        fs.renameSync(full + '.tmp', full);
+        setActiveNotesFile(target);
+        notesFile = full;
+        json(200, { saved: true, file: target, path: full, directory: notesDirectoryPath() });
       } catch { json(400, { error: 'Could not save notes' }); }
       return;
     }

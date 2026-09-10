@@ -26,7 +26,7 @@ Before every commit: `git status` must not stage files under `data/` (except `.g
 ## Documentation and releases
 
 - Every application change MUST update **README.md** in the same task (Unreleased changelog, usage, limitations, restart/migration notes).
-- Documented baseline: **0.2.2** (keep `package.json` and README in sync; bump only when preparing a release).
+- Documented baseline: **0.2.3** (keep `package.json` and README in sync; bump only when preparing a release).
 - Before delivering a distribution ZIP: run `package-release.ps1`; include README.md and this AGENTS.md; exclude personal data and logs.
 
 ## Git workflow (this machine)
