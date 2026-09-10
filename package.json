@@ -1,0 +1,17 @@
+{
+  "name": "terminal-workspace",
+  "version": "0.2.2",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test test.mjs"
+  },
+  "dependencies": {
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/xterm": "^5.5.0",
+    "node-pty": "^1.1.0",
+    "ssh2": "^1.17.0",
+    "ws": "^8.18.0"
+  }
+}

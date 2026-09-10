@@ -1,0 +1,9 @@
+node_modules/
+data/runtime.json
+data/server.log
+data/server-error.log
+data/settings.json
+data/notes.md
+*.zip
+.DS_Store
+Thumbs.db
