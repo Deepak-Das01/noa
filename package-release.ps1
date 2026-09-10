@@ -36,6 +36,8 @@ if (Test-Path -LiteralPath $dataDir) {
   }
   $scriptsDir = Join-Path $dataDir 'scripts'
   if (Test-Path -LiteralPath $scriptsDir) { Remove-Item -LiteralPath $scriptsDir -Recurse -Force }
+  $aiDir = Join-Path $dataDir 'noa-ai'
+  if (Test-Path -LiteralPath $aiDir) { Remove-Item -LiteralPath $aiDir -Recurse -Force }
 } else {
   New-Item -ItemType Directory -Path $dataDir -Force | Out-Null
 }

@@ -12,6 +12,7 @@ import { Client as SshClient } from 'ssh2';
 import { getInfrastructure } from './infrastructure.mjs';
 import { getSystemStats } from './system.mjs';
 import { createScriptsStore } from './scripts.mjs';
+import { createNoaAI } from './noa-ai.mjs';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_PORT = 8765;
@@ -59,6 +60,7 @@ const dataDir = process.env.WORKSPACE_DATA_DIR || path.join(root, 'data');
 fs.mkdirSync(dataDir, { recursive: true });
 const settingsFile = path.join(dataDir, 'settings.json');
 const scriptsStore = createScriptsStore(dataDir);
+const noaAI = createNoaAI(dataDir);
 let settings = { notesDirectory: dataDir, activeNotesFile: 'notes.md' };
 try { settings = { ...settings, activeNotesFile: 'notes.md', ...JSON.parse(fs.readFileSync(settingsFile, 'utf8')) }; } catch {}
 
@@ -141,6 +143,7 @@ const assets = new Map([
   ['/', [path.join(root, 'public/index.html'), 'text/html']],
   ['/app.js', [path.join(root, 'public/app.js'), 'text/javascript']],
   ['/style.css', [path.join(root, 'public/style.css'), 'text/css']],
+  ['/ai.css', [path.join(root, 'public/ai.css'), 'text/css']],
   ['/vendor/xterm.js', [require.resolve('@xterm/xterm'), 'text/javascript']],
   ['/vendor/fit.js', [require.resolve('@xterm/addon-fit'), 'text/javascript']],
   ['/vendor/xterm.css', [path.join(path.dirname(require.resolve('@xterm/xterm')), '../css/xterm.css'), 'text/css']],
@@ -563,6 +566,12 @@ const server = http.createServer(async (req, res) => {
         json(200, serializeSession(session));
         return;
       }
+    }
+    if (url.pathname.startsWith('/api/ai/')) {
+      const handled = await noaAI.handleApi(url, req, res, json);
+      if (handled) return;
+      json(404, { error: 'Not found' });
+      return;
     }
     if (url.pathname === '/api/restart-app' && req.method === 'POST') {
       if (server.restarting) { json(409, { error: 'Restart already in progress' }); return; }

@@ -1,3 +1,4 @@
+import './ai-tests.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
@@ -27,7 +28,7 @@ test('local terminal, access checks, and durable notes', async () => {
       assert.match(html, /Workspace<\/title>/);
     }
     const token = html.match(/name="workspace-token" content="([^"]+)"/)[1];
-    for (const asset of ['/app.js', '/style.css', '/vendor/xterm.js', '/vendor/fit.js', '/vendor/xterm.css']) {
+    for (const asset of ['/app.js', '/style.css', '/ai.css', '/vendor/xterm.js', '/vendor/fit.js', '/vendor/xterm.css']) {
       assert.equal((await fetch(url + asset)).status, 200);
     }
     assert.equal((await fetch(url + '/api/notes')).status, 403);
@@ -57,6 +58,19 @@ test('local terminal, access checks, and durable notes', async () => {
     assert.equal((await fetch(url + '/api/notes/files', { method: 'DELETE', headers, body: JSON.stringify({ file: 'notes.md' }) })).status, 200);
     assert.ok(fs.existsSync(path.join(data, 'notes.md')));
     const sessions = await (await fetch(url + '/api/sessions', { headers })).json();
+    const aiStatus = await (await fetch(url + '/api/ai/status', { headers })).json();
+    assert.equal(aiStatus.cloudAi, false);
+    assert.equal(aiStatus.engine, 'local');
+    const kb = await (await fetch(url + '/api/ai/knowledge', { method: 'POST', headers, body: JSON.stringify({ name: 'Test KB' }) })).json();
+    assert.ok(kb.id);
+    const notePath = path.join(data, 'rag-note.txt');
+    fs.writeFileSync(notePath, 'CrashLoopBackOff happens when a container keeps failing.');
+    const docs = await (await fetch(url + `/api/ai/knowledge/${kb.id}/documents`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ paths: [notePath] }),
+    })).json();
+    assert.equal(docs.documents.length, 1);
     assert.ok(sessions.sessions.length >= 1);
     const sessionId = sessions.sessions[0].id;
     const usesPowerShell = /powershell/i.test(sessions.shellLabel || '');

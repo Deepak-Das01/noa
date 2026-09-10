@@ -570,13 +570,14 @@ function terminalSize(delta) {
 $('term-smaller').onclick = () => terminalSize(-1);
 $('term-larger').onclick = () => terminalSize(1);
 
-const WORKSPACE_VIEWS = ['terminal', 'notes', 'infrastructure', 'settings'];
+const WORKSPACE_VIEWS = ['terminal', 'notes', 'ai', 'infrastructure', 'settings'];
 
 function showView(view) {
   const active = WORKSPACE_VIEWS.includes(view) ? view : 'terminal';
   const wasOnNotes = !$('notes').hidden;
   $('terminal-panel').hidden = active !== 'terminal';
   $('notes').hidden = active !== 'notes';
+  $('noa-ai').hidden = active !== 'ai';
   $('infrastructure').hidden = active !== 'infrastructure';
   $('settings').hidden = active !== 'settings';
   $('terminal-tab').classList.toggle('active', active === 'terminal');
@@ -584,6 +585,8 @@ function showView(view) {
   $('toggle').classList.toggle('active', active === 'notes');
   $('toggle').setAttribute('aria-pressed', String(active === 'notes'));
   $('toggle').setAttribute('aria-expanded', String(active === 'notes'));
+  $('ai-tab').classList.toggle('active', active === 'ai');
+  $('ai-tab').setAttribute('aria-pressed', String(active === 'ai'));
   $('infrastructure-tab').classList.toggle('active', active === 'infrastructure');
   $('infrastructure-tab').setAttribute('aria-pressed', String(active === 'infrastructure'));
   $('settings-tab').classList.toggle('active', active === 'settings');
@@ -593,6 +596,7 @@ function showView(view) {
   if (wasOnNotes && active !== 'notes') save({ force: true });
   if (active === 'notes') $('editor').focus();
   else if (active === 'terminal') activeTab()?.terminal.focus();
+  if (active === 'ai') loadNoaAI();
   if (active === 'infrastructure') {
     loadInfrastructure();
     loadInfraScripts();
@@ -601,6 +605,7 @@ function showView(view) {
     loadReadme();
     startSystemMonitor();
     loadScriptEditor();
+    loadAiSettings();
   } else {
     stopSystemMonitor();
   }
@@ -768,6 +773,7 @@ function stopSystemMonitor() {
 
 $('terminal-tab').onclick = () => showView('terminal');
 $('toggle').onclick = () => showView('notes');
+$('ai-tab').onclick = () => showView('ai');
 $('infrastructure-tab').onclick = () => showView('infrastructure');
 
 document.addEventListener('keydown', event => {
@@ -1671,6 +1677,552 @@ $('restart-app').onclick = async () => {
     button.disabled = false;
   }
 };
+
+const aiState = {
+  knowledgeBases: [],
+  selectedKbIds: new Set(),
+  documents: [],
+  conversations: [],
+  conversationId: null,
+  generating: false,
+  indexPoll: null,
+  selectedSource: null,
+};
+
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result.split(',')[1]);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+async function loadNoaAI() {
+  await Promise.all([refreshAiKnowledge(), refreshAiStatus(), refreshAiConversations()]);
+  if (!aiState.indexPoll) {
+    aiState.indexPoll = setInterval(async () => {
+      if ($('noa-ai').hidden) return;
+      await pollAiIndexing();
+    }, 1500);
+  }
+}
+
+async function refreshAiStatus() {
+  try {
+    const status = await api('/api/ai/status');
+    $('ai-model-label').textContent = `Model: ${status.llmModel || 'not set'}`;
+    $('ai-internet-label').textContent = 'Internet: OFF';
+    if (!status.ollamaAvailable) {
+      $('ai-model-label').textContent = 'Local AI engine unavailable';
+    } else if (!status.llmInstalled) {
+      $('ai-model-label').textContent = 'Select a model in Settings → Noa AI';
+    }
+  } catch { /* ignore */ }
+}
+
+async function refreshAiKnowledge() {
+  const data = await api('/api/ai/knowledge');
+  aiState.knowledgeBases = data.knowledgeBases || [];
+  if (!aiState.selectedKbIds.size && aiState.knowledgeBases.length) {
+    const first = aiState.knowledgeBases.find(kb => kb.enabled) || aiState.knowledgeBases[0];
+    if (first) aiState.selectedKbIds.add(first.id);
+  }
+  renderAiKnowledgeBases();
+  const kbId = [...aiState.selectedKbIds][0];
+  if (kbId) await refreshAiDocuments(kbId);
+}
+
+function renderAiKnowledgeBases() {
+  const list = $('ai-kb-list');
+  list.innerHTML = '';
+  if (!aiState.knowledgeBases.length) {
+    list.innerHTML = '<p class="ai-empty">No knowledge added yet. Create a knowledge base to start.</p>';
+    return;
+  }
+  for (const kb of aiState.knowledgeBases) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = `ai-kb-item${aiState.selectedKbIds.has(kb.id) ? ' active' : ''}${kb.enabled ? '' : ' disabled'}`;
+    btn.innerHTML = `<span>●</span><span>${escapeHtml(kb.name)}</span>`;
+    btn.title = `${kb.document_count} documents, ${kb.chunk_count} chunks`;
+    btn.onclick = () => {
+      aiState.selectedKbIds.clear();
+      aiState.selectedKbIds.add(kb.id);
+      renderAiKnowledgeBases();
+      refreshAiDocuments(kb.id);
+    };
+    btn.oncontextmenu = event => {
+      event.preventDefault();
+      const action = prompt('Rename knowledge base, or type DELETE to remove:', kb.name);
+      if (!action) return;
+      if (action.toUpperCase() === 'DELETE') {
+        api(`/api/ai/knowledge/${kb.id}`, { method: 'DELETE' }).then(() => refreshAiKnowledge());
+      } else {
+        api(`/api/ai/knowledge/${kb.id}`, { method: 'PATCH', body: JSON.stringify({ name: action }) }).then(() => refreshAiKnowledge());
+      }
+    };
+    list.appendChild(btn);
+  }
+}
+
+function documentStatusLabel(doc) {
+  if (doc.status === 'indexing') return '◌ Indexing';
+  if (doc.status === 'error' || doc.status === 'scanned_ocr_required') return '⚠ Failed';
+  if (doc.status === 'pending' || !doc.indexed_at) return '○ Not indexed';
+  if ((doc.chunk_count ?? 0) === 0) return '⚠ Failed';
+  return '● Ready';
+}
+
+function documentStatusTitle(doc, embeddingModel) {
+  const lines = [
+    `status: ${doc.status}`,
+    `chunks: ${doc.chunk_count ?? 0}`,
+    `indexed: ${doc.indexed_at || 'never'}`,
+    `embedding model: ${embeddingModel || 'not set'}`,
+  ];
+  if (doc.error_message) lines.push(`error: ${doc.error_message}`);
+  return lines.join('\n');
+}
+
+async function refreshAiDocuments(kbId) {
+  const data = await api(`/api/ai/knowledge/${kbId}/documents`);
+  aiState.documents = data.documents || [];
+  aiState.embeddingModel = data.embeddingModel || '';
+  const list = $('ai-doc-list');
+  if (!aiState.documents.length) {
+    list.innerHTML = '<p class="ai-empty">Add documents or a folder to teach Noa about your files.</p>';
+    return;
+  }
+  list.innerHTML = aiState.documents.map(doc => `
+    <div class="ai-doc-item">
+      <span class="ai-doc-status" title="${escapeHtml(documentStatusTitle(doc, aiState.embeddingModel))}">${documentStatusLabel(doc)} ${escapeHtml(doc.filename)}</span>
+      <button type="button" data-doc-id="${escapeHtml(doc.id)}">Remove</button>
+    </div>`).join('');
+  list.querySelectorAll('button[data-doc-id]').forEach(button => {
+    button.onclick = async () => {
+      await api(`/api/ai/documents/${button.dataset.docId}`, { method: 'DELETE' });
+      await refreshAiDocuments(kbId);
+      await refreshAiKnowledge();
+    };
+  });
+}
+
+async function pollAiIndexing() {
+  const progress = await api('/api/ai/indexing/status');
+  const box = $('ai-index-progress');
+  if (!progress.indexing?.running) {
+    box.hidden = true;
+    return;
+  }
+  box.hidden = false;
+  const pct = progress.indexing.total ? Math.round((progress.indexing.current / progress.indexing.total) * 100) : 0;
+  $('ai-index-label').textContent = `${progress.indexing.phase || 'Indexing'} — ${progress.indexing.filename || ''} (${progress.indexing.current}/${progress.indexing.total})`;
+  $('ai-index-bar').style.width = `${pct}%`;
+}
+
+async function ensureKnowledgeBase() {
+  if (aiState.knowledgeBases.length) return [...aiState.selectedKbIds][0] || aiState.knowledgeBases[0].id;
+  const name = prompt('Knowledge base name:', 'My knowledge');
+  if (!name) return null;
+  const kb = await api('/api/ai/knowledge', { method: 'POST', body: JSON.stringify({ name }) });
+  await refreshAiKnowledge();
+  aiState.selectedKbIds.add(kb.id);
+  return kb.id;
+}
+
+$('ai-kb-add').onclick = async () => {
+  const name = prompt('Knowledge base name:');
+  if (!name) return;
+  await api('/api/ai/knowledge', { method: 'POST', body: JSON.stringify({ name }) });
+  await refreshAiKnowledge();
+};
+
+const aiFileInput = document.createElement('input');
+aiFileInput.type = 'file';
+aiFileInput.multiple = true;
+aiFileInput.accept = '.pdf,.txt,.md,.docx,.json,.yaml,.yml,.js,.mjs,.ts,.py,.ps1,.sh,.css,.html,.xml';
+aiFileInput.hidden = true;
+document.body.appendChild(aiFileInput);
+
+$('ai-add-files').onclick = async () => {
+  const kbId = await ensureKnowledgeBase();
+  if (!kbId) return;
+  aiFileInput.onchange = async () => {
+    const files = [...aiFileInput.files];
+    if (!files.length) return;
+    const payload = { files: [] };
+    for (const file of files) {
+      payload.files.push({ name: file.name, data: await fileToBase64(file) });
+    }
+    await api(`/api/ai/knowledge/${kbId}/documents`, { method: 'POST', body: JSON.stringify(payload) });
+    aiFileInput.value = '';
+    await refreshAiDocuments(kbId);
+    await refreshAiKnowledge();
+    pollAiIndexing();
+  };
+  aiFileInput.click();
+};
+
+$('ai-add-folder').onclick = async () => {
+  const kbId = await ensureKnowledgeBase();
+  if (!kbId) return;
+  const folder = prompt('Enter full folder path on this computer:');
+  if (!folder) return;
+  await api(`/api/ai/knowledge/${kbId}/documents`, { method: 'POST', body: JSON.stringify({ path: folder }) });
+  await refreshAiDocuments(kbId);
+  await refreshAiKnowledge();
+  pollAiIndexing();
+};
+
+$('ai-reindex').onclick = async () => {
+  const kbId = [...aiState.selectedKbIds][0];
+  if (!kbId) return;
+  await api(`/api/ai/knowledge/${kbId}/index`, { method: 'POST', body: JSON.stringify({ reindexAll: true }) });
+  pollAiIndexing();
+};
+
+async function refreshAiConversations() {
+  const data = await api('/api/ai/conversations');
+  aiState.conversations = data.conversations || [];
+  const menu = $('ai-conv-menu');
+  menu.innerHTML = '';
+  for (const conv of aiState.conversations) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.textContent = conv.title;
+    btn.onclick = () => openAiConversation(conv.id);
+    menu.appendChild(btn);
+  }
+  if (!aiState.conversationId && aiState.conversations[0]) {
+    await openAiConversation(aiState.conversations[0].id);
+  }
+}
+
+async function openAiConversation(id) {
+  aiState.conversationId = id;
+  const data = await api(`/api/ai/conversations/${id}`);
+  $('ai-conv-current').textContent = data.conversation.title;
+  $('ai-conv-menu').hidden = true;
+  renderAiMessages(data.messages || []);
+}
+
+function renderAiMessages(messages) {
+  const chat = $('ai-chat');
+  chat.innerHTML = '';
+  for (const message of messages) {
+    appendAiMessage(message.role, message.content, message.sources || [], message.meta || {});
+  }
+}
+
+function groundingBadgeClass(badge) {
+  const map = {
+    DOCUMENTS: 'documents',
+    'DOCUMENTS + MODEL': 'documents-model',
+    'MODEL KNOWLEDGE': 'model',
+    UNVERIFIED: 'unverified',
+    INSUFFICIENT: 'insufficient',
+  };
+  return map[badge] || 'model';
+}
+
+function applyAiGroundingBadge(node, meta = {}) {
+  if (!meta.groundingBadge) return;
+  let badge = node.querySelector('.ai-grounding-badge');
+  if (!badge) {
+    badge = document.createElement('span');
+    badge.className = 'ai-grounding-badge';
+    const contentEl = node.querySelector('.ai-message-content');
+    node.insertBefore(badge, contentEl || node.firstChild);
+  }
+  badge.textContent = meta.groundingBadge;
+  badge.className = `ai-grounding-badge ai-badge-${groundingBadgeClass(meta.groundingBadge)}`;
+}
+
+function appendAiMessage(role, content, sources = [], meta = {}) {
+  const node = document.createElement('div');
+  node.className = `ai-message ${role}`;
+  const contentEl = document.createElement('div');
+  contentEl.className = 'ai-message-content';
+  contentEl.textContent = content;
+  node.appendChild(contentEl);
+  if (role === 'assistant') {
+    applyAiGroundingBadge(node, meta);
+    const actions = document.createElement('div');
+    actions.className = 'ai-message-actions';
+    const copyBtn = document.createElement('button');
+    copyBtn.type = 'button';
+    copyBtn.textContent = 'Copy';
+    copyBtn.onclick = () => navigator.clipboard.writeText(contentEl.textContent);
+    actions.appendChild(copyBtn);
+    node.appendChild(actions);
+    if (sources.length) renderAiCitations(node, sources);
+  }
+  $('ai-chat').appendChild(node);
+  $('ai-chat').scrollTop = $('ai-chat').scrollHeight;
+  return node;
+}
+
+function renderAiCitations(node, sources) {
+  const block = document.createElement('div');
+  block.className = 'ai-citations';
+  block.innerHTML = '<strong>Sources</strong>';
+  sources.forEach((source, index) => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'ai-citation';
+    btn.innerHTML = `[${index + 1}] ${escapeHtml(source.filename || 'document')}<br><small>${escapeHtml(source.section || '')}${source.page_number ? ` · Page ${source.page_number}` : ''}</small>`;
+    btn.onclick = () => showAiSourceDetail(source);
+    block.appendChild(btn);
+  });
+  node.appendChild(block);
+  renderAiSourcesPanel(sources);
+}
+
+function renderAiSourcesPanel(sources, { groundingMode, groundingBadge, freshnessSensitive } = {}) {
+  const panel = $('ai-sources');
+  panel.innerHTML = '';
+  if (groundingMode === 'model-only') {
+    const block = document.createElement('div');
+    block.className = 'ai-sources-grounding';
+    const badge = document.createElement('p');
+    badge.className = 'ai-sources-badge';
+    badge.textContent = groundingBadge === 'UNVERIFIED' ? 'UNVERIFIED' : 'MODEL KNOWLEDGE';
+    block.appendChild(badge);
+    const note = document.createElement('p');
+    note.className = 'ai-empty';
+    note.textContent = 'No document sources used';
+    block.appendChild(note);
+    if (groundingBadge === 'UNVERIFIED' || freshnessSensitive) {
+      const warn = document.createElement('p');
+      warn.className = 'ai-freshness-warning';
+      warn.textContent = '⚠ Current information not verified';
+      block.appendChild(warn);
+    }
+    panel.appendChild(block);
+    return;
+  }
+  if (!sources?.length) {
+    panel.innerHTML = '<p class="ai-empty">No document sources used.</p>';
+    return;
+  }
+  const grouped = new Map();
+  for (const source of sources) {
+    const key = source.filename || 'document';
+    if (!grouped.has(key)) grouped.set(key, []);
+    grouped.get(key).push(source);
+  }
+  let index = 1;
+  for (const [filename, items] of grouped) {
+    const group = document.createElement('div');
+    group.className = 'ai-source-group';
+    const heading = document.createElement('p');
+    heading.className = 'ai-source-group-title';
+    heading.textContent = `${filename} — ${items.length} passage${items.length === 1 ? '' : 's'}`;
+    group.appendChild(heading);
+    for (const source of items) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'ai-citation';
+      const label = source.section || (source.page_number ? `Page ${source.page_number}` : `Passage ${index}`);
+      btn.innerHTML = `[${index}] ${escapeHtml(label)}`;
+      btn.onclick = () => showAiSourceDetail(source);
+      group.appendChild(btn);
+      index += 1;
+    }
+    panel.appendChild(group);
+  }
+}
+
+function showAiSourceDetail(source) {
+  aiState.selectedSource = source;
+  $('ai-source-detail').hidden = false;
+  $('ai-source-meta').innerHTML = `
+    <dt>Document</dt><dd>${escapeHtml(source.filename || '')}</dd>
+    <dt>Page</dt><dd>${source.page_number || '—'}</dd>
+    <dt>Section</dt><dd>${escapeHtml(source.section || '—')}</dd>
+    <dt>Relevance</dt><dd>${typeof source.score === 'number' ? source.score.toFixed(2) : '—'}</dd>`;
+  $('ai-source-text').textContent = source.content || '';
+}
+
+$('ai-source-copy').onclick = () => {
+  if (aiState.selectedSource?.content) navigator.clipboard.writeText(aiState.selectedSource.content);
+};
+
+$('ai-conv-trigger').onclick = () => {
+  $('ai-conv-menu').hidden = !$('ai-conv-menu').hidden;
+};
+
+$('ai-conv-new').onclick = async () => {
+  aiState.conversationId = null;
+  $('ai-conv-current').textContent = 'New conversation';
+  $('ai-chat').innerHTML = '';
+  $('ai-sources').innerHTML = '<p class="ai-empty">Retrieved sources appear here.</p>';
+};
+
+$('ai-local-badge').onclick = async () => {
+  const status = await api('/api/ai/status');
+  alert(`AI engine: Local (Ollama)\nEmbedding model: ${status.embeddingModel || 'not set'}\nKnowledge database: Local\nCloud AI: Disabled\nInternet required: No`);
+};
+
+$('ai-chat-form').addEventListener('submit', async event => {
+  event.preventDefault();
+  if (aiState.generating) return;
+  const message = $('ai-input').value.trim();
+  if (!message) return;
+  const kbIds = [...aiState.selectedKbIds];
+  appendAiMessage('user', message);
+  $('ai-input').value = '';
+  aiState.generating = true;
+  $('ai-stop').hidden = false;
+  const assistantNode = appendAiMessage('assistant', 'Generating…');
+  const assistantMeta = {};
+  let fullText = '';
+  try {
+    const response = await fetch('/api/ai/chat', {
+      method: 'POST',
+      headers: { 'X-Workspace-Token': token, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        stream: true,
+        message,
+        conversationId: aiState.conversationId,
+        knowledgeBaseIds: kbIds,
+        answerMode: $('ai-answer-mode').value,
+      }),
+    });
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    const assistantContent = assistantNode.querySelector('.ai-message-content');
+    if (assistantContent) assistantContent.textContent = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const parts = buffer.split('\n\n');
+      buffer = parts.pop() || '';
+      for (const part of parts) {
+        const lines = part.split('\n');
+        let event = 'message';
+        let data = '';
+        for (const line of lines) {
+          if (line.startsWith('event: ')) event = line.slice(7);
+          if (line.startsWith('data: ')) data += line.slice(6);
+        }
+        if (!data) continue;
+        const payload = JSON.parse(data);
+        if (event === 'meta') {
+          aiState.conversationId = payload.conversationId;
+          aiState.groundingMode = payload.groundingMode;
+          assistantMeta.groundingBadge = payload.groundingBadge;
+          assistantMeta.freshnessSensitive = payload.freshnessSensitive;
+          assistantMeta.possiblyStale = payload.possiblyStale;
+          applyAiGroundingBadge(assistantNode, assistantMeta);
+          renderAiSourcesPanel(payload.sources || [], {
+            groundingMode: payload.groundingMode,
+            groundingBadge: payload.groundingBadge,
+            freshnessSensitive: payload.freshnessSensitive,
+          });
+        }
+        if (event === 'token') {
+          fullText += payload.text || '';
+          const contentEl = assistantNode.querySelector('.ai-message-content');
+          if (contentEl) contentEl.textContent = fullText;
+          $('ai-chat').scrollTop = $('ai-chat').scrollHeight;
+        }
+        if (event === 'done') {
+          aiState.groundingMode = payload.groundingMode;
+          assistantMeta.groundingBadge = payload.groundingBadge || assistantMeta.groundingBadge;
+          assistantMeta.freshnessSensitive = payload.freshnessSensitive ?? assistantMeta.freshnessSensitive;
+          assistantMeta.possiblyStale = payload.possiblyStale ?? assistantMeta.possiblyStale;
+          applyAiGroundingBadge(assistantNode, assistantMeta);
+          if (payload.sources?.length) renderAiCitations(assistantNode, payload.sources);
+          else {
+            renderAiSourcesPanel([], {
+              groundingMode: payload.groundingMode,
+              groundingBadge: payload.groundingBadge,
+              freshnessSensitive: payload.freshnessSensitive,
+            });
+          }
+          refreshAiConversations();
+        }
+        if (event === 'error') {
+          const contentEl = assistantNode.querySelector('.ai-message-content');
+          if (contentEl) contentEl.textContent = payload.error || 'Generation failed.';
+        }
+      }
+    }
+  } catch (error) {
+    const contentEl = assistantNode.querySelector('.ai-message-content');
+    if (contentEl) contentEl.textContent = error.message || 'Could not reach local AI.';
+  } finally {
+    aiState.generating = false;
+    $('ai-stop').hidden = true;
+  }
+});
+
+$('ai-input').addEventListener('keydown', event => {
+  if (event.key === 'Enter' && !event.shiftKey) {
+    event.preventDefault();
+    $('ai-chat-form').requestSubmit();
+  }
+});
+
+$('ai-stop').onclick = async () => {
+  await api('/api/ai/chat/cancel', { method: 'POST', body: '{}' });
+  aiState.generating = false;
+  $('ai-stop').hidden = true;
+};
+
+async function loadAiSettings() {
+  try {
+    const [settings, status] = await Promise.all([api('/api/ai/settings'), api('/api/ai/status')]);
+    $('ai-settings-ollama').value = settings.ollamaBaseUrl || 'http://127.0.0.1:11434';
+    $('ai-settings-citations').checked = Boolean(settings.showCitations);
+    $('ai-settings-require-sources').checked = Boolean(settings.requireSources);
+    $('ai-settings-data-path').textContent = settings.dataLocation || '—';
+    const llm = $('ai-settings-llm');
+    const embed = $('ai-settings-embed');
+    const chatModels = status.chatModels || status.models || [];
+    const embeddingModels = status.embeddingModels || [];
+    llm.innerHTML = '<option value="">Select a chat model…</option>' + chatModels.map(name => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join('');
+    embed.innerHTML = '<option value="">Select an embedding model…</option>' + embeddingModels.map(name => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join('');
+    if (settings.llmModel) llm.value = settings.llmModel;
+    const embedValue = status.resolvedEmbeddingModel || settings.embeddingModel;
+    if (embedValue) embed.value = embedValue;
+    const lines = [];
+    if (!status.ollamaAvailable) lines.push('Ollama is not running. Install Ollama and start it on this PC.');
+    else {
+      lines.push(`LLM: ${status.llmInstalled ? 'Installed' : 'Not installed'}`);
+      if (!status.embedModelValid) lines.push('Embedding model invalid — choose nomic-embed-text');
+      else lines.push(`Embeddings: ${status.embedInstalled ? 'Installed' : 'Not installed'}`);
+      if (status.embeddingSmokeTest?.ok) lines.push(`${status.embeddingSmokeTest.dimensions}-dim vectors OK`);
+      else if (status.embeddingSmokeTest?.error) lines.push(`Embedding test failed: ${status.embeddingSmokeTest.error}`);
+    }
+    $('ai-settings-status').textContent = lines.join(' · ');
+  } catch {
+    $('ai-settings-status').textContent = 'Could not load AI settings.';
+  }
+}
+
+async function saveAiSettings() {
+  await api('/api/ai/settings', {
+    method: 'PUT',
+    body: JSON.stringify({
+      ollamaBaseUrl: $('ai-settings-ollama').value.trim(),
+      llmModel: $('ai-settings-llm').value,
+      embeddingModel: $('ai-settings-embed').value,
+      showCitations: $('ai-settings-citations').checked,
+      requireSources: $('ai-settings-require-sources').checked,
+      answerMode: $('ai-answer-mode').value,
+    }),
+  });
+  await refreshAiStatus();
+}
+
+['ai-settings-llm', 'ai-settings-embed', 'ai-settings-ollama', 'ai-settings-citations', 'ai-settings-require-sources'].forEach(id => {
+  $(id)?.addEventListener('change', () => saveAiSettings().catch(() => {}));
+});
 
 loadNotes();
 if (sessionStorage.getItem('noaFreshStart')) {

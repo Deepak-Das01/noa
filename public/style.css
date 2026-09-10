@@ -286,6 +286,7 @@ main {
 
 .terminal-panel,
 .infrastructure-panel,
+.noa-ai-panel,
 .settings-panel,
 aside {
   width: 100%;
@@ -2276,6 +2277,7 @@ textarea {
 [data-theme='glass'] header,
 [data-theme='glass'] .terminal-panel,
 [data-theme='glass'] .infrastructure-panel,
+[data-theme='glass'] .noa-ai-panel,
 [data-theme='glass'] .settings-panel,
 [data-theme='glass'] aside,
 [data-theme='glass'] .setting-card,
@@ -2344,6 +2346,7 @@ textarea {
 [data-theme='gradient'] header,
 [data-theme='gradient'] .terminal-panel,
 [data-theme='gradient'] .infrastructure-panel,
+[data-theme='gradient'] .noa-ai-panel,
 [data-theme='gradient'] .settings-panel,
 [data-theme='gradient'] aside,
 [data-theme='gradient'] .setting-card,
@@ -2467,6 +2470,7 @@ textarea {
 
   .terminal-panel,
   .infrastructure-panel,
+  .noa-ai-panel,
   .settings-panel,
   aside {
     border-radius: 16px;

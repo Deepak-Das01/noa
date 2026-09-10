@@ -1,12 +1,11 @@
 # Noa
 
 **Product:** Noa (Terminal Workspace)  
-**Current version:** 0.2.3  
+**Current version:** 0.2.4  
 **Release date:** 2026-09-11  
 **Default URL:** [http://127.0.0.1:8765](http://127.0.0.1:8765)  
-**Canonical dev folder:** `C:\Projects\noa`  
 **Public repository:** [github.com/Deepak-Das01/noa](https://github.com/Deepak-Das01/noa)  
-**Status:** Windows x64 portable app with bundled dependencies; validated on the development PC, not across all Windows devices.
+**Status:** Windows x64 portable app with bundled dependencies; not validated on every Windows device or architecture.
 
 Noa is a **local Windows workspace** that runs in your browser on a single machine. It combines a multi-tab terminal, autosaving notes, VM infrastructure monitoring, and settings — without cloud accounts, subscriptions, or hardcoded paths tied to one laptop.
 
@@ -16,8 +15,9 @@ Noa is a **local Windows workspace** that runs in your browser on a single machi
 | --- | --- |
 | **Terminal** | Up to 5 tabs (local PowerShell/Git Bash or remote SSH), split view, copy/clear, font controls, reconnect after refresh |
 | **Notes** | Multi-file `.txt`/`.md` editor with autosave, rename, delete, find, wrap, and configurable save folder |
+| **Noa AI** | Local RAG knowledge assistant: knowledge bases, document indexing, hybrid search, Ollama LLM, streamed answers, citations — all on this PC |
 | **Infrastructure** | Detects Hyper-V, VirtualBox, and VMware on this PC; VM cards with CPU, RAM, storage, IP, uptime; run saved scripts with output popup |
-| **Settings** | 50/50 layout: preferences + live system monitor (CPU/RAM/GPU) on the left, full README guide on the right |
+| **Settings** | 50/50 layout: preferences + live system monitor (CPU/RAM/GPU) on the left, full README guide on the right; **Noa AI** model settings |
 | **Themes** | Dark, Light, Glass (acrylic), and customizable Gradient |
 | **Branding** | “Welcome to Noa” tagline, Cortana-style ring logo with slow glow animation |
 | **Portability** | Works on any laptop: title uses `{username}'s Workspace`, VM paths detected at runtime, personal data stays in `data\` per PC |
@@ -62,6 +62,80 @@ The header title is **never hardcoded** — on each machine it becomes `{Windows
 - An existing `notes.md` in the new folder is never overwritten: choose another folder.
 - Restart app saves pending notes, shows a reload animation, ends extra terminals, and returns to a single default terminal on the same port. Running commands end during restart.
 
+### Noa AI (local knowledge assistant)
+
+- **Noa AI** navigation: knowledge bases on the left, chat in the center, retrieved sources on the right.
+- Fully **local-first**: documents, embeddings, vector index, and chat run on this PC. No cloud AI APIs. Internet is not required after Ollama models are installed.
+- **Knowledge bases** — create, rename, delete, enable/disable isolated corpora (OpenShift, project docs, study notes, etc.).
+- **Add files** (PDF, TXT, MD, DOCX, JSON, YAML, common source/config text) or **Add folder** (full path, like Notes location).
+- **Indexing** — parse → chunk (section-aware, ~700 tokens) → embed via Ollama → store in SQLite (`data\noa-ai\knowledge.db`). Progress bar; skip unchanged files by SHA-256 hash.
+- **Hybrid retrieval** — semantic vectors + SQLite FTS5 keyword search, merged with reciprocal-rank fusion.
+- **Chat** — streamed answers from a local Ollama LLM; **Documents only** mode (default) refuses when sources are insufficient.
+- **Citations** — source list from retrieved chunk metadata (filename, page, section), not invented by the model.
+- **Conversations** — stored locally; continue, rename, or delete from the conversation picker.
+- **Settings → Noa AI** — Ollama URL, LLM model, embedding model, citation options, data folder path.
+- **Status bar** — `● LOCAL`, model name, `Internet: OFF`.
+
+#### Host machine: Ollama configuration (required for Noa AI)
+
+Noa AI runs **entirely on the host PC**. Ollama is a separate local service that Noa calls over HTTP. No cloud APIs are used.
+
+**1. Install Ollama on the host**
+
+- Download and install [Ollama for Windows](https://ollama.com) on the same machine that runs Noa.
+- After install, Ollama should start automatically (system tray). The default API URL is **`http://127.0.0.1:11434`**.
+- Confirm it is running:
+
+```powershell
+ollama --version
+curl http://127.0.0.1:11434/api/tags
+```
+
+**2. Pull two models (chat + embeddings)**
+
+Noa needs **one chat model** for answers and **one embedding model** for document indexing and retrieval. Do not use a chat model as the embedding model.
+
+```powershell
+ollama pull llama3.2
+ollama pull nomic-embed-text
+```
+
+Recommended defaults in **Settings → Noa AI**:
+
+| Setting | Example value | Role |
+| --- | --- | --- |
+| Ollama URL | `http://127.0.0.1:11434` | Local API endpoint |
+| LLM model | `llama3.2:latest` | Chat / answer generation |
+| Embedding model | `nomic-embed-text:latest` | Indexing and vector search |
+
+List installed models: `ollama list`
+
+**3. Point Noa at Ollama**
+
+1. Start Noa (`Start Workspace.cmd`).
+2. Open **Settings → Noa AI**.
+3. Set **Ollama URL** (usually `http://127.0.0.1:11434`).
+4. Select the **LLM** and **embedding** models from the dropdowns (populated from `ollama list`).
+5. Save settings, then open **Noa AI**, add documents, wait for indexing (**● Ready**), and ask questions.
+
+**4. Host-side options (optional)**
+
+| Item | Notes |
+| --- | --- |
+| `OLLAMA_HOST` | If you bind Ollama to another host/port, set the same URL in Noa AI settings |
+| GPU / VRAM | Ollama uses the host GPU when available; large models need more VRAM |
+| Firewall | Keep Ollama on localhost unless you intentionally expose it on your network |
+| Offline use | After models are pulled, Noa AI works without internet |
+| Service not running | Start Ollama from the tray icon or run `ollama serve` in a terminal |
+
+**5. Verify from Noa**
+
+- **Settings → Noa AI** status should show Ollama available and list models.
+- The Noa AI status bar shows **● LOCAL** and the selected LLM name.
+- If indexing fails with embedding errors, confirm **nomic-embed-text** (or another `*embed*` model) is selected—not the chat model.
+
+Restart the Noa app after server updates. Refresh the browser for UI changes. Scanned PDFs without extractable text are marked **OCR required** (OCR not in v1).
+
 ### Infrastructure
 
 - **Infrastructure** navigation shows hypervisors detected on this Windows PC.
@@ -76,7 +150,7 @@ The header title is **never hardcoded** — on each machine it becomes `{Windows
 
 ### Interface
 
-Compact Windows Fluent-inspired styling with a slim header, segmented navigation, translucent surfaces, restrained mint accents, lightweight controls, keyboard focus states, and reduced-motion support. Four appearance themes are available: dark, light, glass (acrylic), and customizable gradient. Terminal, Notes, Infrastructure, and Settings share the same application window.
+Compact Windows Fluent-inspired styling with a slim header, segmented navigation, translucent surfaces, restrained mint accents, lightweight controls, keyboard focus states, and reduced-motion support. Four appearance themes are available: dark, light, glass (acrylic), and customizable gradient. Terminal, Notes, Noa AI, Infrastructure, and Settings share the same application window.
 
 - Header tagline: **Welcome to Noa**
 - Noa logo: Cortana-style circular rings with a very slow, smooth glow animation (disabled when reduced motion is preferred)
@@ -91,11 +165,11 @@ Compact Windows Fluent-inspired styling with a slim header, segmented navigation
 
 This release is a portable **source application**, not a standalone executable. The distribution ZIP bundles `node_modules` for **Windows x64**, so internet access is not required on the destination PC for the first launch. Other Windows versions and ARM64 devices have not been physically validated. If native modules fail on the destination architecture, run `Setup Workspace.cmd` to rebuild them locally; Microsoft's C++ build tools may be required in that case.
 
-## Distribution package (0.2.3)
+## Distribution package (0.2.4)
 
 | Item | Detail |
 | --- | --- |
-| **File name** | `TerminalWorkspace-0.2.3-Windows.zip` (build with `package-release.ps1`) |
+| **File name** | `TerminalWorkspace-0.2.4-Windows.zip` (build with `package-release.ps1`) |
 | **Approx. size** | ~17 MB (includes `node_modules`) |
 | **Target** | Windows 10/11 x64 |
 | **Node.js** | 22 or 24 LTS required on the destination PC (not bundled) |
@@ -106,9 +180,9 @@ This release is a portable **source application**, not a standalone executable. 
 After extraction you get one folder:
 
 ```text
-TerminalWorkspace-0.2.3/
+TerminalWorkspace-0.2.4/
   INSTALL.txt                Quick install steps (same as below)
-  package.json               Version 0.2.3 and dependency list
+  package.json               Version 0.2.4 and dependency list
   package-lock.json          Locked dependency versions
   server.mjs                 HTTP API and terminal sessions
   infrastructure.mjs         Hypervisor and VM detection (Windows)
@@ -150,7 +224,7 @@ On first launch on a new PC, the app creates fresh `data\` files and uses the ne
 
 ## First-time installation
 
-Use **`TerminalWorkspace-0.2.3-Windows.zip`** (or build the latest with `package-release.ps1`).
+Use **`TerminalWorkspace-0.2.4-Windows.zip`** (or build the latest with `package-release.ps1`).
 
 1. Copy the ZIP to the other computer (USB drive, network share, email attachment, etc.).
 2. Extract the entire ZIP into a writable folder, for example:
@@ -178,7 +252,7 @@ The quoted filenames and `&` are required because launcher filenames contain spa
 | **Start Workspace.cmd** | Every normal launch. Dependencies are already in the ZIP. |
 | **Setup Workspace.cmd** | Only if Start fails with a missing or incompatible native module, or after changing `package.json` dependencies. Runs `npm install` on that PC. |
 
-You do **not** need to run Setup on a typical Windows x64 PC when using the 0.2.3 ZIP as shipped.
+You do **not** need to run Setup on a typical Windows x64 PC when using the 0.2.4 ZIP as shipped.
 
 ## Start, restart, and stop
 
@@ -246,23 +320,14 @@ node .\server.mjs
 
 An occupied explicitly selected port causes startup to fail; choose another port or remove the override. The Windows launchers currently use the app's `data` folder for discovery and logs, so use the default data location with them. Use foreground mode when overriding WORKSPACE_DATA_DIR.
 
-## Development and GitHub (main copy)
+## Development and GitHub
 
 | Item | Value |
 | --- | --- |
-| **Canonical dev folder** | `C:\Projects\noa` |
 | **Public repository** | [github.com/Deepak-Das01/noa](https://github.com/Deepak-Das01/noa) |
 | **Default branch** | `main` |
 
-After changes on the dev PC, commit and push so other laptops stay in sync:
-
-```powershell
-cd C:\Projects\noa
-git add -A
-git status
-git commit -m "Your message"
-git push origin main
-```
+Clone or pull into any writable folder on your PC (for example `Documents\Noa`). Commit and push from that clone so other machines can `git pull`.
 
 **Never push personal data:** `data\` (notes, settings, logs, runtime), `.env`, keys, or ZIPs. Only source code and docs belong in git. See `AGENTS.md`.
 
@@ -281,15 +346,15 @@ Noa is designed so **each laptop keeps its own data** while sharing the same app
 ### Set up on a new laptop
 
 ```powershell
-git clone https://github.com/Deepak-Das01/noa.git C:\Projects\noa
-cd C:\Projects\noa
+git clone https://github.com/Deepak-Das01/noa.git "$env:USERPROFILE\Documents\Noa"
+cd "$env:USERPROFILE\Documents\Noa"
 npm install
 ```
 
 Or pull updates on an existing clone:
 
 ```powershell
-cd C:\Projects\noa
+cd "$env:USERPROFILE\Documents\Noa"
 git pull origin main
 npm install
 ```
@@ -298,7 +363,7 @@ Then run **`Start Workspace.cmd`**. Do **not** copy another PC’s `data\` folde
 
 ### Transfer without git (ZIP)
 
-1. Build or copy **`TerminalWorkspace-0.2.3-Windows.zip`** (or rebuild with `package-release.ps1`).
+1. Build or copy **`TerminalWorkspace-0.2.4-Windows.zip`** (or rebuild with `package-release.ps1`).
 2. On the destination: extract, install Node.js 22+, run **`Start Workspace.cmd`**.
 3. If native modules fail (unusual on matching Windows x64), run **`Setup Workspace.cmd`** on that PC only.
 
@@ -326,7 +391,7 @@ cd "C:\path\to\TerminalWorkspace"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\package-release.ps1"
 ```
 
-This creates **`TerminalWorkspace-<version>-Windows.zip`** in the project folder (for example `TerminalWorkspace-0.2.3-Windows.zip`). The script:
+This creates **`TerminalWorkspace-<version>-Windows.zip`** in the project folder (for example `TerminalWorkspace-0.2.4-Windows.zip`). The script:
 
 - Reads the version from `package.json`.
 - Copies the project including `node_modules`.
@@ -378,7 +443,7 @@ noa/  (or TerminalWorkspace-<version>/ in the ZIP)
   AGENTS.md                  Contributor change-documentation rules
   README.md                  Usage, release history, known limits
   data/                      Local user data; excluded from release ZIP
-  TerminalWorkspace-0.2.3-Windows.zip   Portable distribution (when built)
+  TerminalWorkspace-0.2.4-Windows.zip   Portable distribution (when built)
 ```
 
 ## Development and validation
@@ -395,7 +460,7 @@ The integration smoke test covers HTTP assets, notes persistence, access checks,
 
 ## Versioning and change-documentation policy
 
-The current application baseline is **0.2.3**. `package.json` is the version source; keep this README synchronized with it. Do not bump the version merely for every edit. When preparing a new release, select the appropriate version and date, and move the accumulated Unreleased entries into that release section.
+The current application baseline is **0.2.4**. `package.json` is the version source; keep this README synchronized with it. Do not bump the version merely for every edit. When preparing a new release, select the appropriate version and date, and move the accumulated Unreleased entries into that release section.
 
 **Every future change must be recorded in this README in the same update**, including UI changes, features, fixes, behavior changes, dependency changes, and documentation corrections. Add concise entries under Unreleased, describing what changed, relevant validation, and any migration or restart requirement. Update affected usage instructions and known limitations as well. Keep previous release entries intact. Refresh the distribution ZIP whenever a release package is delivered.
 
@@ -403,7 +468,47 @@ The current application baseline is **0.2.3**. `package.json` is the version sou
 
 ### Unreleased
 
-_No unreleased changes._
+_(none)_
+
+### 0.2.4 — 2026-09-11
+
+**Noa** — build **`TerminalWorkspace-0.2.4-Windows.zip`** with `package-release.ps1`. **Restart** the app after server updates; **refresh** the browser for UI changes. Install Ollama on the host and pull chat + embedding models before using Noa AI (see **Host machine: Ollama configuration** above).
+
+**Noa AI — model knowledge trust and freshness**
+
+- Freshness-sensitive query detection (CEO, latest version, current price, leadership, etc.)
+- Model-only answers for time-sensitive questions no longer claim current facts; deterministic unverified response when no recent local source exists
+- Source freshness metadata (`file_modified_at`, `indexed_at`) on retrieved chunks; filename-year and age heuristics flag possibly outdated documents
+- Grounding badges on assistant messages: DOCUMENTS, DOCUMENTS + MODEL, MODEL KNOWLEDGE, UNVERIFIED
+- Sources panel shows "Current information not verified" for unverified model-only answers
+- Per-turn logging: `answerMode`, `retrievalCount`, `groundingMode`, `freshnessSensitive`
+- Regression tests for TCP (stable), CEO (unverified), OpenShift (unverified), recent/stale leadership docs, and documents-only consistency
+
+**Noa AI (Phase 1 — local RAG)**
+
+- **Noa AI** navigation and three-panel UI (knowledge / chat / sources)
+- Knowledge base CRUD, add files/folder, document list, re-index, indexing progress
+- Local parsing (PDF, TXT, MD, DOCX, JSON, YAML, text/code), SHA-256 deduplication
+- SQLite storage (`data\noa-ai\`) with FTS5 keyword search and embedding vectors
+- Ollama provider for embeddings + streamed LLM chat
+- Hybrid retrieval, Documents only mode, conversation persistence, Settings → Noa AI
+- API routes under `/api/ai/*`; modules: `noa-ai.mjs`, `knowledge/`, `ai/`, `retrieval/`
+- Dependencies: `better-sqlite3`, `pdf-parse`, `mammoth`, `js-yaml`
+
+**RAG fixes**
+
+- Chat models (e.g. `llama3.2`) cannot be used as embedding models; indexing validates models, auto-recovers stuck `indexing` documents, and surfaces document status (Ready / Indexing / Failed / Not indexed)
+- Hybrid retrieval no longer drops vector-only or keyword-only matches; small TXT files always produce at least one chunk
+- Debug endpoint: `POST /api/ai/debug/retrieve` (workspace token required); set `NOA_AI_DEBUG=1` for structured pipeline logs
+
+**RAG relevance**
+
+- Relevance gate combines cosine similarity, lexical overlap, and FTS
+- Unrelated queries (e.g. “ceo of redhat” against Kubernetes docs) return zero document context
+- Per-turn prompts: current question is the final instruction; prior RAG context is not persisted into conversation history
+- Final context capped at 5 deduplicated chunks; Sources panel shows only chunks actually sent to the model
+
+**Validation:** `npm test` (19 tests). **Not in Phase 1:** watched folders, Notes indexing, terminal “Ask Noa”, OCR, PPTX/XLSX.
 
 ### 0.2.3 — 2026-09-11
 
